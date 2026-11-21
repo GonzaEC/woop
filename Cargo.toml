@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+authors = ["Gonzalo Echeverria Crenna"]
+repository = "https://github.com/GonzaEC/woop"
+
+[workspace.dependencies]
+woop-pty = { path = "crates/woop-pty" }
+woop-term = { path = "crates/woop-term" }
+woop-config = { path = "crates/woop-config" }
+woop-ai = { path = "crates/woop-ai" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
