@@ -55,7 +55,7 @@ cargo run --release
 | `crates/woop-pty` | Cross-platform pseudo-terminal management |
 | `crates/woop-config` | Configuration, themes and keybindings |
 | `crates/woop-ai` | Optional AI assistant providers |
-| `docs/` | Architecture and design documentation |
+| `docs/` | Architecture, [decision records](docs/adr/README.md) and roadmap |
 
 Read [docs/architecture.md](docs/architecture.md) for an overview of how the pieces fit together.
 

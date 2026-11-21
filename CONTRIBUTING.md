@@ -32,6 +32,16 @@ cargo test --workspace
 - **Tests.** Add tests for new behaviour, especially parsing and state transitions in `woop-term`.
 - **Documentation.** Public items carry doc comments. Update the docs when behaviour changes.
 
+## Architecture decisions
+
+Significant technical decisions are recorded as [Architecture Decision Records](docs/adr/README.md). If your change adds a structural dependency, moves a crate boundary or sets a cross-cutting rule, include a new ADR in the same pull request. Read the existing records first: they explain why the code is shaped the way it is.
+
+## AI-assisted contributions
+
+AI coding assistants are welcome. The project's conventions for agents are in [AGENTS.md](AGENTS.md), which most assistants read automatically; reusable workflows for Claude Code live in `.claude/`.
+
+Whatever tools you use, you are the author of your contribution: make sure you understand the code, have tested it, and can answer questions about it in review. Do not add tool-attribution trailers to commits.
+
 ## Commit messages
 
 Use the [Conventional Commits](https://www.conventionalcommits.org) format:
