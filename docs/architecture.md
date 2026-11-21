@@ -31,10 +31,13 @@ graph TD
 | `Pty` | `woop-pty` | Owns the pseudo-terminal and the child process: input, resize, exit status |
 | `Terminal` | `woop-term` | Pure emulation state: feed it bytes, read the screen. No I/O, fully unit-testable |
 | `Session` | `woop-term` | Connects a `Pty` to a `Terminal`, reads output on a background thread and answers terminal queries |
+| `Screen` | `woop-term` | Snapshot of the visible cells, colours and cursor in Woop's own types, ready to draw |
+| `input` | `woop-term` | Encodes key presses and pasted text into the bytes applications expect |
+| `TerminalView` | `woop-app` | iced canvas program that draws a `Screen` and turns window events into messages |
 
 ## Threading model
 
-PTY reading runs on a dedicated thread per session, so slow rendering never blocks the shell and a busy shell never blocks the UI. The reader thread forwards raw output over a channel; the owner of the `Session` applies it to the `Terminal` with `Session::pump`. The UI will coalesce updates and redraw at most once per frame.
+PTY reading runs on a dedicated thread per session, so slow rendering never blocks the shell and a busy shell never blocks the UI. The reader thread forwards raw output over a channel and notifies the application, at most once until the next `Session::pump` ([ADR 0010](adr/0010-screen-snapshots-and-wakeups.md)). The application then pumps, takes a `Screen` snapshot and redraws. When the shell is idle, Woop does no work.
 
 ## Shell integration
 

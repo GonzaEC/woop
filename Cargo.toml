@@ -12,10 +12,12 @@ repository = "https://github.com/GonzaEC/woop"
 
 [workspace.dependencies]
 woop-pty = { path = "crates/woop-pty" }
+woop-term = { path = "crates/woop-term" }
 
 alacritty_terminal = "0.26.0"
 portable-pty = "0.9.0"
 thiserror = "2.0"
+iced = { version = "0.14.0", features = ["canvas", "advanced"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

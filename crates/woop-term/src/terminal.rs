@@ -4,11 +4,13 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use alacritty_terminal::Term;
 use alacritty_terminal::event::{Event, EventListener};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
-use alacritty_terminal::term::Config;
 use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
+
+use crate::screen::Screen;
 
 /// Size of the terminal screen, in character cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,7 +80,7 @@ pub enum TerminalEvent {
 
 /// Forwards events from the emulator to the owning [`Terminal`].
 #[derive(Clone)]
-pub struct EventProxy {
+pub(crate) struct EventProxy {
     sender: Sender<TerminalEvent>,
 }
 
@@ -187,10 +189,51 @@ impl Terminal {
         lines.join("\n")
     }
 
-    /// Gives read access to the underlying emulator, for rendering.
-    pub fn inner(&self) -> &Term<EventProxy> {
-        &self.term
+    /// Returns a snapshot of the visible screen, for rendering.
+    pub fn screen(&self) -> Screen {
+        Screen::from_content(
+            self.term.renderable_content(),
+            usize::from(self.size.rows),
+            usize::from(self.size.cols),
+        )
     }
+
+    /// Returns the input modes requested by the running application.
+    pub fn mode(&self) -> TerminalMode {
+        let mode = self.term.mode();
+        TerminalMode {
+            app_cursor: mode.contains(TermMode::APP_CURSOR),
+            bracketed_paste: mode.contains(TermMode::BRACKETED_PASTE),
+            alt_screen: mode.contains(TermMode::ALT_SCREEN),
+        }
+    }
+
+    /// Scrolls the view through history. Positive values scroll up, towards
+    /// older output.
+    pub fn scroll(&mut self, lines: i32) {
+        self.term.scroll_display(Scroll::Delta(lines));
+    }
+
+    /// Scrolls the view back to the most recent output.
+    pub fn scroll_to_bottom(&mut self) {
+        self.term.scroll_display(Scroll::Bottom);
+    }
+
+    /// Returns how many lines the view is scrolled back into history.
+    pub fn scroll_offset(&self) -> usize {
+        self.term.grid().display_offset()
+    }
+}
+
+/// Input modes requested by the application running in the terminal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TerminalMode {
+    /// Cursor keys send application sequences (`ESC O A` instead of `ESC [ A`).
+    pub app_cursor: bool,
+    /// Pasted text must be wrapped in bracketed paste markers.
+    pub bracketed_paste: bool,
+    /// The alternate screen is active, as in full-screen applications.
+    pub alt_screen: bool,
 }
 
 impl std::fmt::Debug for Terminal {

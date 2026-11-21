@@ -28,3 +28,4 @@ Start from [the template](template.md) and add the record to the index below in 
 | [0007](0007-dedicated-pty-reader-thread.md) | Read process output on a dedicated thread | Accepted |
 | [0008](0008-no-accounts-no-telemetry.md) | No accounts, no telemetry, optional bring-your-own AI | Accepted |
 | [0009](0009-pull-requests-gated-by-ci.md) | Pull requests gated by cross-platform CI | Accepted |
+| [0010](0010-screen-snapshots-and-wakeups.md) | Render from screen snapshots, woken by output notifications | Accepted |

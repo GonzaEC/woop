@@ -1,6 +1,8 @@
 //! A shell running in a pseudo-terminal, connected to a [`Terminal`].
 
 use std::io::Read;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -21,15 +23,32 @@ pub struct Session {
     terminal: Terminal,
     output: Receiver<Vec<u8>>,
     reader: Option<JoinHandle<()>>,
+    pending: Arc<AtomicBool>,
     closed: bool,
 }
 
 impl Session {
     /// Starts `command` in a new pseudo-terminal of the given size.
     pub fn spawn(command: &ShellCommand, size: TerminalSize) -> Result<Self> {
+        Self::spawn_with_notifier(command, size, || {})
+    }
+
+    /// Starts `command` like [`Session::spawn`], calling `notify` from the
+    /// reader thread when new output is waiting to be pumped.
+    ///
+    /// Notifications are coalesced: after one call, `notify` is not called
+    /// again until [`Session::pump`] has run. It is also called once when the
+    /// output closes. This lets an event loop sleep until there is work.
+    pub fn spawn_with_notifier(
+        command: &ShellCommand,
+        size: TerminalSize,
+        notify: impl Fn() + Send + 'static,
+    ) -> Result<Self> {
         let pty = Pty::spawn(command, size.into())?;
         let mut reader = pty.take_reader()?;
         let (sender, output) = mpsc::channel();
+        let pending = Arc::new(AtomicBool::new(false));
+        let reader_pending = Arc::clone(&pending);
 
         let reader = thread::Builder::new()
             .name("woop-pty-reader".into())
@@ -42,9 +61,16 @@ impl Session {
                             if sender.send(buffer[..read].to_vec()).is_err() {
                                 break;
                             }
+                            if !reader_pending.swap(true, Ordering::AcqRel) {
+                                notify();
+                            }
                         }
                     }
                 }
+                // Disconnect the channel before the final notification, so the
+                // owner observes the closed output when it pumps.
+                drop(sender);
+                notify();
             })?;
 
         Ok(Self {
@@ -52,6 +78,7 @@ impl Session {
             terminal: Terminal::new(size),
             output,
             reader: Some(reader),
+            pending,
             closed: false,
         })
     }
@@ -59,6 +86,12 @@ impl Session {
     /// Returns the terminal state.
     pub fn terminal(&self) -> &Terminal {
         &self.terminal
+    }
+
+    /// Returns the terminal state for changes that do not involve the
+    /// process, such as scrolling the view.
+    pub fn terminal_mut(&mut self) -> &mut Terminal {
+        &mut self.terminal
     }
 
     /// Sends input to the process, as if typed on a keyboard.
@@ -78,6 +111,9 @@ impl Session {
     /// Replies requested by the process (such as cursor position reports)
     /// are written back automatically. The remaining events are returned.
     pub fn pump(&mut self) -> Result<Vec<TerminalEvent>> {
+        // Clear the flag before draining, so output that arrives meanwhile
+        // triggers a fresh notification instead of being missed.
+        self.pending.store(false, Ordering::Release);
         loop {
             match self.output.try_recv() {
                 Ok(bytes) => self.terminal.advance(&bytes),

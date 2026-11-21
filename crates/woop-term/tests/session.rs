@@ -74,3 +74,24 @@ fn resizes_the_terminal() {
     assert_eq!(session.terminal().size(), TerminalSize::new(10, 40));
     assert_eq!(session.terminal().screen_lines().len(), 10);
 }
+
+#[test]
+fn notifies_when_output_arrives() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    let notify = move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    };
+    let mut session =
+        Session::spawn_with_notifier(&print_command("woop-notify"), size(), notify).expect("spawn");
+
+    let found = session
+        .wait_until(TIMEOUT, |term| term.screen_text().contains("woop-notify"))
+        .expect("pump");
+
+    assert!(found, "screen was:\n{}", session.terminal().screen_text());
+    assert!(calls.load(Ordering::SeqCst) >= 1);
+}
