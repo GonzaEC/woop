@@ -3,7 +3,7 @@
 Each milestone produces something that can be built, run and tested.
 
 - [x] **0. Foundation.** Cargo workspace, CI on Windows, macOS and Linux, contribution guidelines.
-- [ ] **1. Headless core.** Spawn a shell through a PTY and parse its output into a screen grid, with tests.
+- [x] **1. Headless core.** Spawn a shell through a PTY and parse its output into a screen grid, with tests.
 - [ ] **2. Classic terminal.** Window, GPU rendering of the grid, keyboard input, colours, scrollback, selection, copy and paste.
 - [ ] **3. Command blocks.** Shell integration for PowerShell, bash, zsh and fish; output grouped into blocks with exit status and duration.
 - [ ] **4. Editor-like input.** Multi-line input with a free cursor, selection and editing shortcuts.

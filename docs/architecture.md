@@ -24,9 +24,17 @@ graph TD
 4. **`woop-config`** loads configuration, themes and keybindings from TOML and notifies the app of changes.
 5. **`woop-ai`** provides optional assistant features through a common provider interface. It is inactive unless the user configures a provider.
 
+## Core types
+
+| Type | Crate | Role |
+| --- | --- | --- |
+| `Pty` | `woop-pty` | Owns the pseudo-terminal and the child process: input, resize, exit status |
+| `Terminal` | `woop-term` | Pure emulation state: feed it bytes, read the screen. No I/O, fully unit-testable |
+| `Session` | `woop-term` | Connects a `Pty` to a `Terminal`, reads output on a background thread and answers terminal queries |
+
 ## Threading model
 
-PTY reading runs on a dedicated thread per session, so slow rendering never blocks the shell and a busy shell never blocks the UI. Parsed updates are sent to the UI thread, which coalesces them and redraws at most once per frame.
+PTY reading runs on a dedicated thread per session, so slow rendering never blocks the shell and a busy shell never blocks the UI. The reader thread forwards raw output over a channel; the owner of the `Session` applies it to the `Terminal` with `Session::pump`. The UI will coalesce updates and redraw at most once per frame.
 
 ## Shell integration
 
@@ -37,6 +45,6 @@ Command blocks rely on the shell emitting OSC 133 semantic prompt markers around
 | Area | Choice | Reason |
 | --- | --- | --- |
 | UI and rendering | [iced](https://iced.rs) | GPU-accelerated through wgpu, cross-platform, Elm-style architecture |
-| Terminal emulation | [vte](https://crates.io/crates/vte) | Fast, well-tested VT/ANSI escape sequence parser |
+| Terminal emulation | [alacritty_terminal](https://crates.io/crates/alacritty_terminal) | Mature, well-tested VT parser, screen grid and scrollback |
 | Pseudo-terminal | [portable-pty](https://crates.io/crates/portable-pty) | Unified API over ConPTY and Unix PTYs |
 | Configuration | [serde](https://serde.rs) + [toml](https://crates.io/crates/toml) | Human-readable configuration |

@@ -57,6 +57,12 @@ cargo run --release
 | `crates/woop-ai` | Optional AI assistant providers |
 | `docs/` | Architecture and design documentation |
 
+To see the terminal core in action without a window:
+
+```sh
+cargo run -p woop-term --example headless -- "echo hello"
+```
+
 Read [docs/architecture.md](docs/architecture.md) for an overview of how the pieces fit together.
 
 ## Contributing
