@@ -1,0 +1,12 @@
+[package]
+name = "woop-term"
+description = "Terminal emulation core for Woop: VT parsing, screen grid and command blocks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
