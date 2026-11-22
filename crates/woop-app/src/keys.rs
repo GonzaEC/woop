@@ -211,8 +211,11 @@ pub fn editor_key(
         (_, Some('c')) if ctrl_only && context.keys.has_selection => EditorKey::CopyGrid,
         (_, Some('c')) if ctrl_only && context.is_empty => EditorKey::Shell(vec![0x03]),
         (_, Some('c')) if ctrl_only => EditorKey::Clear,
-        // The editor's own shortcuts.
-        (_, Some('a' | 'x' | 'v')) if ctrl_only && !cfg!(target_os = "macos") => EditorKey::Edit,
+        // The editor's own shortcuts (Cmd on macOS, where Ctrl+A and the
+        // like keep their meaning for the shell).
+        (_, Some('a' | 'x' | 'v')) if ctrl_only && context.keys.shortcuts != Shortcuts::MacOs => {
+            EditorKey::Edit
+        }
         // Ending the shell would lose the text being written.
         (_, Some('d')) if ctrl_only && !context.is_empty => EditorKey::Ignore,
         // Other control keys act as at an empty prompt (Ctrl+L clears the
@@ -679,6 +682,11 @@ mod tests {
         assert_eq!(
             mac.key(character("a"), WindowModifiers::LOGO),
             EditorKey::Edit
+        );
+        // Ctrl+A is not an editing shortcut on macOS.
+        assert_eq!(
+            mac.key(character("a"), WindowModifiers::CTRL),
+            EditorKey::Shell(vec![0x01])
         );
         // Nothing selected anywhere: the copy shortcut does nothing.
         assert_eq!(
