@@ -16,3 +16,6 @@ workspace = true
 alacritty_terminal.workspace = true
 thiserror.workspace = true
 woop-pty.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

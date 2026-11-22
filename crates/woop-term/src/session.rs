@@ -61,7 +61,9 @@ impl Session {
         size: TerminalSize,
         notify: impl Fn() + Send + Sync + 'static,
     ) -> Result<Self> {
-        let pty = Pty::spawn(command, size.into())?;
+        // The terminal clamps the size; the process must see the same one.
+        let terminal = Terminal::new(size);
+        let pty = Pty::spawn(command, terminal.size().into())?;
         let reader = pty.take_reader()?;
         let pending = Arc::new(AtomicBool::new(false));
         let notify: Notify = Arc::new(notify);
@@ -69,7 +71,7 @@ impl Session {
 
         Ok(Self {
             pty,
-            terminal: Terminal::new(size),
+            terminal,
             output,
             reader: Some(reader),
             pending,
@@ -96,9 +98,9 @@ impl Session {
 
     /// Resizes both the pseudo-terminal and the screen.
     pub fn resize(&mut self, size: TerminalSize) -> Result<()> {
-        self.pty.resize(size.into())?;
+        // The terminal clamps the size; the process must see the same one.
         self.terminal.resize(size);
-        Ok(())
+        self.pty.resize(self.terminal.size().into())
     }
 
     /// Applies output received so far to the terminal, without blocking.

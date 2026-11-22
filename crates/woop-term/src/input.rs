@@ -112,13 +112,20 @@ pub fn encode_key(key: Key, modifiers: Modifiers, mode: TerminalMode) -> Option<
 
 /// Encodes pasted text, wrapping it in bracketed paste markers when the
 /// application requested them.
+///
+/// Control characters other than tab and line breaks are removed: copied
+/// text (for example from a web page) can hide escape sequences or keys
+/// such as Ctrl+C, which would otherwise act as typed keys or end a
+/// bracketed paste early.
 pub fn encode_paste(text: &str, mode: TerminalMode) -> Vec<u8> {
+    let text: String = text
+        .chars()
+        .filter(|&ch| !ch.is_control() || matches!(ch, '\t' | '\r' | '\n'))
+        .collect();
     if mode.bracketed_paste {
-        // Strip escape characters so pasted text cannot end the bracket early.
-        let body: String = text.chars().filter(|&ch| ch != '\x1b').collect();
-        let mut out = Vec::with_capacity(body.len() + 12);
+        let mut out = Vec::with_capacity(text.len() + 12);
         out.extend_from_slice(b"\x1b[200~");
-        out.extend_from_slice(body.as_bytes());
+        out.extend_from_slice(text.as_bytes());
         out.extend_from_slice(b"\x1b[201~");
         out
     } else {
@@ -248,6 +255,16 @@ mod tests {
     #[test]
     fn paste_normalises_line_endings() {
         assert_eq!(encode_paste("a\r\nb\nc", normal()), b"a\rb\rc");
+    }
+
+    #[test]
+    fn pasted_control_characters_are_removed() {
+        // Text copied from a web page can hide keys: Ctrl+U clears the
+        // line, ESC starts a key sequence, Ctrl+C interrupts.
+        assert_eq!(
+            encode_paste("echo safe\x15\x1b[A\x03\u{9b}\x7f\tok", normal()),
+            b"echo safe[A\tok"
+        );
     }
 
     #[test]

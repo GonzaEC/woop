@@ -26,15 +26,25 @@ pub struct TerminalSize {
     pub cols: u16,
 }
 
+/// Fewest columns a terminal can have: a wide character takes two, and the
+/// emulator cannot place one in a narrower grid.
+pub const MIN_COLUMNS: u16 = 2;
+
 impl TerminalSize {
     /// Creates a size of `rows` by `cols` cells.
     ///
-    /// Both dimensions are clamped to at least one cell.
+    /// Sizes are clamped to at least one row and [`MIN_COLUMNS`] columns.
     pub fn new(rows: u16, cols: u16) -> Self {
         Self {
             rows: rows.max(1),
-            cols: cols.max(1),
+            cols: cols.max(MIN_COLUMNS),
         }
+    }
+
+    /// Returns this size clamped like [`TerminalSize::new`], for sizes
+    /// built directly from their fields.
+    fn clamped(self) -> Self {
+        Self::new(self.rows, self.cols)
     }
 }
 
@@ -138,6 +148,49 @@ pub struct Terminal {
     /// The window was resized while the alternate screen was shown, so the
     /// hidden scrollback was reflowed and must be recounted.
     reflowed_unseen: bool,
+    /// The start of a character cut off at the end of the last output,
+    /// waiting for the rest of it.
+    utf8_carry: Vec<u8>,
+}
+
+/// Length of the incomplete UTF-8 character at the end of `bytes`: a lead
+/// byte followed by fewer continuation bytes than it announces. Holding at
+/// most three bytes back is always safe; invalid sequences are left to the
+/// parser, which handles them when they are not split.
+fn incomplete_utf8_suffix(bytes: &[u8]) -> usize {
+    let tail = &bytes[bytes.len().saturating_sub(3)..];
+    for (back, &byte) in tail.iter().rev().enumerate() {
+        let needed = match byte {
+            0x80..=0xbf => continue,
+            0xc2..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf4 => 4,
+            _ => return 0,
+        };
+        let have = back + 1;
+        return if have < needed { have } else { 0 };
+    }
+    0
+}
+
+/// Splits `bytes` into pieces of at most `size` bytes (more only if a single
+/// character is longer), never cutting a UTF-8 character in two.
+fn utf8_pieces(mut bytes: &[u8], size: usize) -> impl Iterator<Item = &[u8]> {
+    std::iter::from_fn(move || {
+        if bytes.is_empty() {
+            return None;
+        }
+        let mut end = bytes.len().min(size);
+        if end < bytes.len() {
+            let cut = incomplete_utf8_suffix(&bytes[..end]);
+            if cut < end {
+                end -= cut;
+            }
+        }
+        let (piece, rest) = bytes.split_at(end);
+        bytes = rest;
+        Some(piece)
+    })
 }
 
 /// Lines of scrollback kept, at least.
@@ -169,6 +222,7 @@ const EMULATOR_HISTORY: usize = HISTORY_LINES + TRIM_SLACK + FEED_CHUNK;
 impl Terminal {
     /// Creates an empty terminal of the given size.
     pub fn new(size: TerminalSize) -> Self {
+        let size = size.clamped();
         let (sender, events) = mpsc::channel();
         let config = Config {
             scrolling_history: EMULATOR_HISTORY,
@@ -188,11 +242,31 @@ impl Terminal {
             blocks: BlockList::default(),
             history: 0,
             reflowed_unseen: false,
+            utf8_carry: Vec::new(),
         }
     }
 
     /// Processes output produced by the process running in the terminal.
     pub fn advance(&mut self, bytes: &[u8]) {
+        if self.utf8_carry.is_empty() {
+            self.advance_joined(bytes);
+        } else {
+            let mut joined = std::mem::take(&mut self.utf8_carry);
+            joined.extend_from_slice(bytes);
+            self.advance_joined(&joined);
+        }
+    }
+
+    /// Processes output, keeping a character cut off at the end for the
+    /// next call. The emulator's parser can skip up to two bytes, an ESC
+    /// among them, when the second half of a split character is followed
+    /// by more text, which would put it out of step with the mark scanner
+    /// and change what is shown. With the incomplete end held back, whatever
+    /// the parser still buffers (an invalid sequence before it) is always
+    /// followed by a lead byte or ESC, which it handles like unsplit input.
+    fn advance_joined(&mut self, bytes: &[u8]) {
+        let (bytes, rest) = bytes.split_at(bytes.len() - incomplete_utf8_suffix(bytes));
+        self.utf8_carry.extend_from_slice(rest);
         let now = Instant::now();
         let mut start = 0;
         for (end, mark) in self.marks.scan(bytes) {
@@ -229,7 +303,7 @@ impl Terminal {
     }
 
     fn feed(&mut self, bytes: &[u8]) {
-        for piece in bytes.chunks(FEED_CHUNK) {
+        for piece in utf8_pieces(bytes, FEED_CHUNK) {
             self.parser.advance(&mut self.term, piece);
             // Synchronized updates (mode 2026) make the parser hold output
             // back until the program ends them, which a hostile program never
@@ -239,7 +313,22 @@ impl Terminal {
             if self.parser.sync_timeout().pending_timeout() {
                 self.parser.stop_sync(&mut self.term);
             }
+            self.clamp_view();
             self.update_history(false);
+        }
+    }
+
+    /// Keeps the view within the history. While the view is scrolled back,
+    /// the emulator moves it along with new output but limits it by the
+    /// history's capacity rather than its current size, so some output can
+    /// push the view past the oldest line, and drawing would then read rows
+    /// that do not exist.
+    fn clamp_view(&mut self) {
+        let grid = self.term.grid();
+        let excess = grid.display_offset().saturating_sub(grid.history_size());
+        if excess > 0 {
+            let excess = i32::try_from(excess).unwrap_or(i32::MAX);
+            self.term.scroll_display(Scroll::Delta(-excess));
         }
     }
 
@@ -281,6 +370,7 @@ impl Terminal {
 
     /// Changes the screen size, reflowing content as needed.
     pub fn resize(&mut self, size: TerminalSize) {
+        let size = size.clamped();
         if size != self.size {
             self.term.resize(size);
             self.size = size;
@@ -674,8 +764,101 @@ mod tests {
         assert_eq!(term.selection_text().as_deref(), Some("one\n"));
     }
 
+    /// The emulator's parser can skip up to two bytes (including an ESC)
+    /// after a character split between two reads, so the result must not
+    /// depend on where reads end.
+    #[test]
+    fn characters_split_between_reads_are_joined() {
+        for (first, second) in [
+            (&b"e\xcc"[..], &b"\x81\x1b\x800"[..]),
+            // An invalid sequence before the cut character.
+            (&b"e\xcc\xcc"[..], &b"\x81\x1b\x800"[..]),
+            (&b"e\xe6\x97\xcc"[..], &b"\x81\x1b]133;A\x07x"[..]),
+            (&b"\xf0\x9f\x98\xf0\x9f"[..], &b"\x98\x80\x1b[31mz"[..]),
+            (&b"\xce"[..], &b"\x99)\xb5"[..]),
+            (&b"x\xe6\x97"[..], &b"\xa5\x1b\xe6\x97\xa5"[..]),
+        ] {
+            let mut whole = terminal(2, 20);
+            whole.advance(&[first, second].concat());
+            let mut split = terminal(2, 20);
+            split.advance(first);
+            split.advance(second);
+
+            assert_eq!(split.screen(), whole.screen(), "{first:?} | {second:?}");
+        }
+    }
+
+    /// An OSC cut off at its limit with a multi-byte character at the cut,
+    /// followed by marks: the result is the same wherever the reads end.
+    #[test]
+    fn a_cut_off_sequence_is_independent_of_reads() {
+        use crate::marks::MAX_OSC_BYTES;
+
+        for shift in 0..4 {
+            let mut bytes =
+                format!("\x1b]0;{}", "x".repeat(MAX_OSC_BYTES - 4 - shift)).into_bytes();
+            bytes.extend("日本語".as_bytes());
+            bytes.extend(b"\r\n\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07");
+            let mut whole = terminal(4, 20);
+            whole.advance(&bytes);
+            let expected = (whole.screen(), whole.blocks().len());
+
+            let near_cut = MAX_OSC_BYTES - 8..MAX_OSC_BYTES + 8;
+            let near_marks = bytes.len() - 40..bytes.len();
+            for split in near_cut.chain(near_marks) {
+                let mut term = terminal(4, 20);
+                term.advance(&bytes[..split]);
+                term.advance(&bytes[split..]);
+                assert_eq!(
+                    (term.screen(), term.blocks().len()),
+                    expected,
+                    "shift {shift}, split {split}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn utf8_suffixes() {
+        assert_eq!(incomplete_utf8_suffix(b"abc"), 0);
+        assert_eq!(incomplete_utf8_suffix(b"a\xe6\x97"), 2);
+        assert_eq!(incomplete_utf8_suffix(b"a\xe6\x97\xa5"), 0);
+        assert_eq!(incomplete_utf8_suffix(b"\xf0\x9f\x98"), 3);
+        assert_eq!(incomplete_utf8_suffix(b"\xcc"), 1);
+        assert_eq!(incomplete_utf8_suffix(b"\x80\x80"), 0);
+        assert_eq!(incomplete_utf8_suffix(b""), 0);
+    }
+
+    /// Output arriving while the view is scrolled back could leave the
+    /// emulator's view offset larger than its history, so drawing read rows
+    /// that do not exist (a panic in debug builds, wrong rows in release).
+    #[test]
+    fn the_view_never_scrolls_past_the_history() {
+        let mut term = terminal(3, 2);
+        term.advance(b"\x1b[2;4r\x1b[2J");
+        term.scroll(1);
+        term.advance("日本   ".as_bytes());
+
+        assert!(term.scroll_offset() <= term.history_size());
+        let _ = term.screen();
+    }
+
+    /// A wide character needs two columns; with one, the emulator panicked.
+    /// A window shrunk to its minimum produced exactly that grid.
+    #[test]
+    fn wide_characters_in_the_narrowest_terminal() {
+        let narrow = TerminalSize { rows: 1, cols: 1 };
+        let mut term = Terminal::new(narrow);
+        term.advance("日本".as_bytes());
+
+        let mut term = terminal(3, 10);
+        term.resize(narrow);
+        term.advance("日本".as_bytes());
+        assert_eq!(term.size().cols, MIN_COLUMNS);
+    }
+
     #[test]
     fn size_is_never_zero() {
-        assert_eq!(TerminalSize::new(0, 0), TerminalSize::new(1, 1));
+        assert_eq!(TerminalSize::new(0, 0), TerminalSize { rows: 1, cols: 2 });
     }
 }

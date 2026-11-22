@@ -456,8 +456,10 @@ mod tests {
     }
 
     #[test]
-    fn grid_size_is_at_least_one_cell() {
-        assert_eq!(metrics().grid_size(Size::ZERO), TerminalSize::new(1, 1));
+    fn grid_size_has_a_minimum() {
+        // A tiny window still gets a grid wide enough for wide characters.
+        let size = metrics().grid_size(Size::ZERO);
+        assert_eq!((size.rows, size.cols), (1, woop_term::MIN_COLUMNS));
     }
 
     #[test]
