@@ -15,4 +15,4 @@ Project skills live in `.claude/skills/` and agents in `.claude/agents/`:
 - `security-reviewer` agent: attacker-minded review of anything that handles untrusted output, input, files, processes or dependencies. Security comes first.
 - `performance-reviewer` agent: measures hot-path changes in release builds and reports numbers.
 
-Run the specialist agents according to the "Reviews" table in `AGENTS.md`; they work independently, so launch the ones that apply in parallel.
+Use the review agents only at the level the "Reviews" table in `AGENTS.md` calls for: none for normal changes, one round for sensitive ones, a full audit at the end of a milestone. Launch them in the background, in parallel, and keep working meanwhile.

@@ -22,7 +22,7 @@ Judge every change in this order; when two conflict, the earlier one wins, and a
    - No `unsafe` without an ADR. Write files only to the user's own directories, with permissions that keep other users out. No network access except user-configured AI providers. Never log or store secrets.
    - Every new dependency needs a reason and an evaluation (maintenance, vulnerabilities, licence, `unsafe`, cost); see the [`add-dependency`](.claude/skills/add-dependency/SKILL.md) skill. Prefer the standard library and well-maintained crates.
    - `deny.toml`, `.github/workflows/` and `.github/dependabot.yml` are security controls: changing them is a security change. When a new advisory makes the dependency check fail, upgrade the crate; if that is impossible (the fix must come from upstream), add the advisory to `ignore` in `deny.toml` with how the crate reaches Woop and why the risk is acceptable, after a security review. Never weaken the policy to make CI pass.
-2. **Tests, so nothing breaks.** Every behaviour change has tests; every bug fix starts with a test that fails without it (see the [`fix-bug`](.claude/skills/fix-bug/SKILL.md) skill). Code that parses untrusted input must never panic or hang on arbitrary bytes, and has tests that prove it: add or extend a property in `crates/woop-term/tests/robustness.rs` ([ADR 0014](docs/adr/0014-property-based-robustness-tests.md)). Before merging changes to parsing, input or block tracking, run a long search in debug and release builds (`PROPTEST_CASES=20000 cargo test --release -p woop-term --test robustness`). Dependencies have bugs too: these tests found two in the emulation library.
+2. **Tests, so nothing breaks.** Every behaviour change has tests; every bug fix starts with a test that fails without it (see the [`fix-bug`](.claude/skills/fix-bug/SKILL.md) skill). Code that parses untrusted input must never panic or hang on arbitrary bytes, and has tests that prove it: add or extend a property in `crates/woop-term/tests/robustness.rs` ([ADR 0014](docs/adr/0014-property-based-robustness-tests.md)). CI runs them on every change; at the end of a milestone, also run a long search in debug and release builds (`PROPTEST_CASES=20000 cargo test --release -p woop-term --test robustness`), in the background while other work continues. Dependencies have bugs too: these tests found two in the emulation library.
 3. **Performance.** Keep the read, parse and draw paths free of per-byte or per-cell allocations, locks and blocking calls, and do no work while the shell is idle. Work triggered by output costs at most a walk over the screen, never over the scrollback: an attacker controls how often it happens. Check what a dependency's call really costs, in its source, before using it on a hot path or changing how often it runs (trimming the emulator's scrollback is cheap in small steps but rotates and reallocates all of it beyond 1,000 rows). Changes to hot paths include before-and-after measurements from release builds; reasoning alone has been wrong here before.
 
 ## Commands
@@ -80,15 +80,15 @@ Automated tests cannot judge how the window looks or feels (rendering, keyboard,
 
 ## Reviews
 
-Every non-trivial change gets a general review before it is merged. Two areas also get a specialist review, whose checklists in `.claude/agents/` are plain Markdown and can be followed by any person or tool:
+Review effort is proportional to risk. Automated checks run on every change for free (tests, robustness properties, clippy, dependency audit, three platforms in CI); human or agent reviews are spent where they pay off. The checklists in `.claude/agents/` are plain Markdown and can be followed by any person or tool.
 
-| Review | When | Checklist |
+| Level | When | What is done |
 | --- | --- | --- |
-| General | Every non-trivial change | [`reviewer.md`](.claude/agents/reviewer.md) |
-| Security | The change touches program output handling (escape sequences, marks, replies), input or paste, the clipboard, process spawning, files Woop writes, shell integration scripts, dependencies, CI workflows, `deny.toml` or secrets | [`security-reviewer.md`](.claude/agents/security-reviewer.md) |
-| Performance | The change touches reading, parsing, block tracking, snapshots or drawing, start-up or memory use | [`performance-reviewer.md`](.claude/agents/performance-reviewer.md) |
+| Normal | Most changes: the interface, features, refactors, documentation | Tests with the change and a green CI. No review agents. |
+| Sensitive | The change touches code that reads program output (parsing, escape sequences, marks, replies), input or paste, the clipboard, process spawning, files Woop writes, shell integration scripts, dependencies, CI workflows, `deny.toml` or secrets | One security review ([`security-reviewer.md`](.claude/agents/security-reviewer.md)), plus one performance review ([`performance-reviewer.md`](.claude/agents/performance-reviewer.md)) if the read, parse or draw path changed. Fix critical, high and medium findings in the pull request; record low ones in the roadmap. Review again only if the fixes were large. |
+| End of milestone | Before a milestone of the roadmap is marked done | A security and performance audit of everything the milestone added, a general review ([`reviewer.md`](.claude/agents/reviewer.md)) and long robustness runs (see "Tests" above). |
 
-Security findings are fixed before anything else in the pull request.
+Security findings are fixed before anything else in the pull request. When in doubt between two levels, pick the higher one.
 
 ## Keeping this guide current
 

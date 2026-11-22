@@ -17,7 +17,11 @@ Run the commit and push as separate steps after the checks have passed. Never ch
 
 ## 3. Review
 
-For a non-trivial change, run the reviews that apply according to the "Reviews" table in `AGENTS.md`: the `reviewer` agent, plus `security-reviewer` and `performance-reviewer` when the change touches their areas. They are independent; run them in parallel. Fix security findings first, then the rest, and verify again.
+Pick the review level from the "Reviews" table in `AGENTS.md`:
+
+- **Normal** (most changes): no review agents; tests and CI are the review.
+- **Sensitive**: one `security-reviewer` run, plus one `performance-reviewer` run if the read, parse or draw path changed, in parallel and in the background while you continue. Fix critical, high and medium findings; record low ones in the roadmap. Do not loop: review again only if the fixes were large.
+- **End of milestone**: the audit described in `AGENTS.md`.
 
 ## 4. Commit
 
