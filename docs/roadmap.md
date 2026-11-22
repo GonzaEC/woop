@@ -1,6 +1,6 @@
 # Roadmap
 
-Each milestone produces something that can be built, run and tested.
+Each milestone produces something that can be built, run and tested, and is closed with a security and performance audit of what it added (see "Reviews" in `AGENTS.md`).
 
 ## Quality track
 
