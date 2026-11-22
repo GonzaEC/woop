@@ -17,6 +17,7 @@ Security is Woop's first priority ([ADR 0012](docs/adr/0012-security-tests-perfo
 - Output from programs is treated as untrusted ([ADR 0013](docs/adr/0013-bound-the-cost-of-program-output.md)):
   - programs cannot read or write the clipboard;
   - output waits in a bounded queue, so a program that floods the terminal slows itself down instead of exhausting memory or freezing the window;
+  - input is written on a separate thread with a bounded backlog, and replies to terminal queries are limited, so a program that floods queries or stops reading cannot freeze the window or grow memory;
   - shell integration marks cost bounded work, whatever a program prints;
   - escape sequences that never end are cut off, and output can never be held back from the screen;
   - window titles are limited in length and stripped of control and invisible formatting characters.

@@ -38,7 +38,7 @@ graph TD
 
 ## Threading model
 
-PTY reading runs on a dedicated thread per session, so slow rendering never blocks the shell and a busy shell never blocks the UI. The reader thread forwards raw output over a bounded queue (at most 1 MiB; when it is full the process blocks on its writes) and notifies the application, at most once until the next `Session::pump` ([ADR 0010](adr/0010-screen-snapshots-and-wakeups.md)). The application then pumps, which applies a bounded amount of output and asks to be woken again if more is waiting, takes a `Screen` snapshot and redraws ([ADR 0013](adr/0013-bound-the-cost-of-program-output.md)). When the shell is idle, Woop does no work.
+PTY reading runs on a dedicated thread per session, so slow rendering never blocks the shell and a busy shell never blocks the UI. The reader thread forwards raw output over a bounded queue (at most 1 MiB; when it is full the process blocks on its writes) and notifies the application, at most once until the next `Session::pump` ([ADR 0010](adr/0010-screen-snapshots-and-wakeups.md)). The application then pumps, which applies a bounded amount of output and asks to be woken again if more is waiting, takes a `Screen` snapshot and redraws ([ADR 0013](adr/0013-bound-the-cost-of-program-output.md)). Input goes the other way through a second thread per session: keys, paste and replies to terminal queries are queued (at most 16 MiB) and written by the writer thread, so a process that stops reading its input never blocks the UI ([ADR 0015](adr/0015-write-input-on-a-dedicated-thread.md)). When the shell is idle, Woop does no work.
 
 ## Shell integration
 

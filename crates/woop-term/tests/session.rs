@@ -99,3 +99,40 @@ fn notifies_when_output_arrives() {
     assert!(found, "screen was:\n{}", session.terminal().screen_text());
     assert!(calls.load(Ordering::SeqCst) >= 1);
 }
+
+/// A process that never reads its input.
+fn idle_process() -> ShellCommand {
+    if cfg!(windows) {
+        ShellCommand::new("ping.exe")
+            .arg("-n")
+            .arg("30")
+            .arg("127.0.0.1")
+    } else {
+        ShellCommand::new("sleep").arg("30")
+    }
+}
+
+#[test]
+fn writing_never_blocks_the_caller() {
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    // Input that the process never reads fills the pseudo-terminal's
+    // buffer; writing must still return at once, so the window never hangs.
+    let session = Session::spawn(&idle_process(), size()).expect("spawn");
+    let (done, finished) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut session = session;
+        let start = Instant::now();
+        let mut result = Ok(());
+        for _ in 0..32 {
+            result = result.and(session.write(&[b'x'; 64 * 1024]));
+        }
+        let _ = done.send((start.elapsed(), result.is_ok()));
+    });
+
+    let (elapsed, _) = finished
+        .recv_timeout(Duration::from_secs(10))
+        .expect("writing 2 MiB blocked the caller");
+    assert!(elapsed < Duration::from_secs(2), "writing took {elapsed:?}");
+}
