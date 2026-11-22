@@ -33,7 +33,11 @@ fn run_block(session: &mut Session, command: &str) -> (String, Option<i32>) {
         .iter()
         .rfind(|block| block.state() == BlockState::Finished)
         .expect("finished block");
-    (block.command().to_owned(), block.exit_code())
+    let command = session
+        .terminal()
+        .block_command(block.id())
+        .unwrap_or_default();
+    (command, block.exit_code())
 }
 
 fn finished(session: &Session) -> usize {
