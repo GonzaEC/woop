@@ -460,8 +460,20 @@ impl Terminal {
         let mut screen = Screen::from_view(&self.term, &view, usize::from(self.size.cols));
         if !self.term.mode().contains(TermMode::ALT_SCREEN) {
             screen.blocks = self.blocks.visible(&self.term, &view);
+            screen.awaiting_command = self.blocks.awaiting_command(&self.term);
+            screen.command_prompt = self.blocks.command_prompt();
         }
         screen
+    }
+
+    /// Returns the id of the block whose command the shell is waiting for,
+    /// with nothing typed into the shell's line yet. `None` without shell
+    /// integration, while a command runs and on the alternate screen.
+    pub fn awaiting_command(&self) -> Option<u64> {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return None;
+        }
+        self.blocks.awaiting_command(&self.term)
     }
 
     /// The rows of the view: the grid lines in view, with collapsed blocks

@@ -464,6 +464,10 @@ impl TerminalView<'_> {
     }
 
     fn draw_cursor(&self, frame: &mut Frame) {
+        // The command editor shows its own cursor; two would be confusing.
+        if self.keys.editor_active {
+            return;
+        }
         let Some(cursor) = self.screen.cursor else {
             return;
         };
@@ -614,6 +618,7 @@ mod tests {
                 mode: woop_term::TerminalMode::default(),
                 has_selection: false,
                 shortcuts: keys::Shortcuts::platform(),
+                editor_active: false,
             },
             cache: &cache,
         };
