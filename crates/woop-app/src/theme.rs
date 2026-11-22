@@ -12,6 +12,8 @@ pub struct Palette {
     pub background: Color,
     /// Cursor colour.
     pub cursor: Color,
+    /// Background of selected text.
+    pub selection: Color,
     /// The 16 ANSI colours: 8 normal followed by 8 bright.
     pub ansi: [Color; 16],
 }
@@ -22,6 +24,7 @@ impl Default for Palette {
             foreground: rgb(0xd4d7dd),
             background: rgb(0x16181d),
             cursor: rgb(0x7aa2f7),
+            selection: rgb(0x2f3d58),
             ansi: [
                 rgb(0x1f2229),
                 rgb(0xe06c75),

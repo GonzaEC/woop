@@ -58,7 +58,11 @@ fn sends_input_to_the_shell() {
 
     let found = session
         .wait_until(TIMEOUT, |term| {
-            term.screen_lines().iter().any(|line| line.trim() == "42")
+            // The prompt may be printed on the same line as the result
+            // when the input is echoed before the shell is ready.
+            term.screen_lines()
+                .iter()
+                .any(|line| line.split_whitespace().last() == Some("42"))
         })
         .expect("pump");
 

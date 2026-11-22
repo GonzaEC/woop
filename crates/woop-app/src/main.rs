@@ -8,7 +8,10 @@ use iced::futures::channel::mpsc::{self, UnboundedSender};
 use iced::futures::{SinkExt, Stream, StreamExt};
 use iced::widget::canvas;
 use iced::{Element, Length, Subscription, Task, clipboard};
-use woop_term::{Screen, Session, ShellCommand, TerminalEvent, TerminalSize, input};
+use woop_term::{
+    Screen, SelectionKind, SelectionPoint, Session, ShellCommand, Terminal, TerminalEvent,
+    TerminalSize, input,
+};
 
 use keys::KeyAction;
 use theme::Palette;
@@ -45,6 +48,10 @@ pub enum Message {
     Resized(TerminalSize),
     /// Clipboard contents arrived for pasting.
     Pasted(Option<String>),
+    /// The left button was pressed: start a new selection.
+    SelectionStarted(SelectionPoint, SelectionKind),
+    /// The mouse moved while selecting.
+    SelectionExtended(SelectionPoint),
 }
 
 struct Woop {
@@ -92,6 +99,29 @@ impl Woop {
                 }
             }
             Message::Key(KeyAction::Paste) => return clipboard::read().map(Message::Pasted),
+            Message::Key(KeyAction::Copy) => {
+                // The selection is cleared once copied, so that a second
+                // Ctrl+C on Windows interrupts the shell as usual.
+                if let Some(session) = &mut self.session
+                    && let Some(text) = session.terminal().selection_text()
+                {
+                    session.terminal_mut().clear_selection();
+                    self.refresh();
+                    return clipboard::write(text);
+                }
+            }
+            Message::SelectionStarted(point, kind) => {
+                if let Some(session) = &mut self.session {
+                    session.terminal_mut().start_selection(kind, point);
+                    self.refresh();
+                }
+            }
+            Message::SelectionExtended(point) => {
+                if let Some(session) = &mut self.session {
+                    session.terminal_mut().extend_selection(point);
+                    self.refresh();
+                }
+            }
             Message::Key(KeyAction::ScrollPages(pages)) => {
                 self.scroll(pages * i32::from(self.size.rows.saturating_sub(1).max(1)));
             }
@@ -117,16 +147,17 @@ impl Woop {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let mode = self
-            .session
-            .as_ref()
-            .map(|session| session.terminal().mode())
-            .unwrap_or_default();
+        let terminal = self.session.as_ref().map(Session::terminal);
+        let keys = keys::KeyContext {
+            mode: terminal.map(Terminal::mode).unwrap_or_default(),
+            has_selection: terminal.is_some_and(Terminal::has_selection),
+            shortcuts: keys::Shortcuts::platform(),
+        };
         canvas(TerminalView {
             screen: &self.screen,
             palette: &self.palette,
             metrics: self.metrics,
-            mode,
+            keys,
             cache: &self.cache,
         })
         .width(Length::Fill)
