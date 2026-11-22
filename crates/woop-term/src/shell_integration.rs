@@ -13,7 +13,7 @@
 //! [`Terminal`]: crate::Terminal
 
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use woop_pty::ShellCommand;
 
