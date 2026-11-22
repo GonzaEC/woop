@@ -20,7 +20,7 @@ Check and write down:
 | --- | --- |
 | Maintained? | Recent releases and commits, open issues answered, more than one maintainer if possible |
 | Widely used? | Downloads and reverse dependencies on crates.io |
-| Known vulnerabilities? | The RustSec advisory database; `cargo deny check advisories` once it is in CI |
+| Known vulnerabilities? | The RustSec advisory database; `cargo deny check` (also run in CI) |
 | Licence compatible with MIT? | MIT, Apache-2.0, BSD, Zlib, ISC are fine; copyleft licences need an ADR |
 | `unsafe` code? | Search the source; prefer crates with little, well-justified `unsafe` |
 | Build scripts or procedural macros? | They run at build time with full access; check what they do |

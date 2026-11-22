@@ -1,0 +1,64 @@
+# Supply-chain policy checked by cargo-deny in CI (ADR 0012).
+# Run locally with `cargo deny check`.
+
+[graph]
+all-features = true
+
+[advisories]
+# Fail on any crate, direct or transitive, with a vulnerability, unsoundness
+# or unmaintained advisory in the RustSec database, and on yanked versions.
+#
+# Every exception below names the advisory, how the crate reaches Woop and
+# why it is accepted for now. Adding or removing an entry is a security
+# change and gets a security review. Revisit the list whenever iced is
+# upgraded: all current entries come in through it.
+version = 2
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
+ignore = [
+    # lru 0.16: use-after-free when a key's Drop panics inside catch_unwind.
+    # Reaches Woop through iced_wgpu -> cryoglyph, which requires ^0.16, so it
+    # cannot be upgraded independently. Woop never uses catch_unwind.
+    { id = "RUSTSEC-2026-0253", reason = "lru via iced_wgpu/cryoglyph; needs catch_unwind, which Woop does not use; awaiting upstream" },
+    # Unmaintained crates without a known vulnerability, all pulled in by iced.
+    { id = "RUSTSEC-2024-0436", reason = "paste (unmaintained) via wgpu-hal/metal, build-time macro only; awaiting upstream" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser (unmaintained) via cosmic-text/fontdb; parses system fonts only; awaiting upstream" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant (unmaintained) via iced_winit/mundy/zbus, Linux desktop settings; awaiting upstream" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names (unmaintained) via iced_winit/mundy/zbus; awaiting upstream" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive (unmaintained) via iced_winit/mundy/zbus, build-time macro; awaiting upstream" },
+]
+
+[licenses]
+version = 2
+# Permissive licences compatible with Woop's MIT licence. Adding another
+# licence, especially a copyleft one, needs a reason in the pull request.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "CC0-1.0",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+ignore = true
+
+[bans]
+# Several versions of the same crate are common in large graphs; report them
+# without failing, so they can be reduced over time.
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+# Only crates.io. Git or other registries need an explicit, reviewed entry.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

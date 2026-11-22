@@ -36,7 +36,7 @@ You are a security engineer reviewing Woop, a cross-platform terminal written in
 4. **Panics.** `unwrap`, `expect`, indexing, slicing, arithmetic overflow and `as` casts reachable from output or input. Every panic is a denial of service.
 5. **Processes and files.** Arguments and environment passed to the shell (quoting, injection), files written by Woop (location, permissions, symlinks, races between check and use), directories created with default permissions on Unix.
 6. **Shell integration scripts.** `eval` or unquoted expansion of data, changes that leak into the user's environment, behaviour when the user's own configuration fails.
-7. **Dependencies.** New crates or features: maintenance, `unsafe` usage, build scripts, network access, licence. Run `cargo tree` to see what a change pulls in.
+7. **Dependencies and CI.** New crates or features: maintenance, `unsafe` usage, build scripts, network access, licence; run `cargo tree` to see what a change pulls in and `cargo deny check` with the policy in `deny.toml`. Any weakening of `deny.toml` (new `ignore` entries, wider licence or source lists). Workflow changes: token permissions, `pull_request_target` or other triggers that expose secrets to forks, actions not pinned to a full commit hash, steps that run code from the pull request with elevated rights.
 8. **`unsafe` and FFI** in Woop's code (forbidden without an ADR).
 9. **Secrets.** Nothing typed or pasted is logged; future AI features never send terminal content without explicit consent; keys are not stored in plain text.
 

@@ -15,6 +15,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+If `Cargo.toml`, `Cargo.lock` or `deny.toml` changed, also run `cargo deny check` (dependency advisories, licences, bans and sources; CI runs it on every pull request and weekly).
+
 - If formatting fails, run `cargo fmt --all` and re-check.
 - If clippy fails, fix the code. Do not silence a lint with `#[allow]` unless there is a clear reason, stated in a comment next to it.
 - If a test fails, find the cause. Never weaken or delete a test to make it pass. A test that fails only sometimes is a bug in the test or the code, not noise.
