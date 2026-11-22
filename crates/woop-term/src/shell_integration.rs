@@ -43,10 +43,10 @@ impl Shell {
     /// Recognises a shell from the program name, such as `/bin/zsh` or
     /// `pwsh.exe`.
     pub fn detect(program: &OsStr) -> Option<Self> {
-        let name = Path::new(program)
-            .file_stem()?
-            .to_str()?
-            .to_ascii_lowercase();
+        // Split on both separators so Windows paths are understood
+        // everywhere, and ignore the extension (`.exe`).
+        let file = program.to_str()?.rsplit(['/', '\\']).next()?;
+        let name = file.split('.').next()?.to_ascii_lowercase();
         match name.as_str() {
             "pwsh" | "powershell" => Some(Self::PowerShell),
             "bash" => Some(Self::Bash),
