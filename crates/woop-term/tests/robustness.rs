@@ -123,6 +123,17 @@ struct Observed {
     blocks: Vec<(String, Option<i32>, BlockState, Option<RelativeRows>)>,
 }
 
+/// The screen without what legitimately differs: block durations depend on
+/// the clock, and block indexes on how many old blocks were trimmed.
+fn comparable_screen(term: &Terminal) -> woop_term::Screen {
+    let mut screen = term.screen();
+    for block in &mut screen.blocks {
+        block.duration = None;
+        block.index = 0;
+    }
+    screen
+}
+
 fn observe(term: &Terminal, kept_history: usize) -> Observed {
     let history = term.history_size() as i64;
     let relative = |rows: BlockRows| -> RelativeRows {
@@ -130,7 +141,7 @@ fn observe(term: &Terminal, kept_history: usize) -> Observed {
         (row(rows.prompt), rows.output.map(row), rows.end.map(row))
     };
     Observed {
-        screen: term.screen(),
+        screen: comparable_screen(term),
         blocks: term
             .blocks()
             .iter()
@@ -171,6 +182,21 @@ fn check_invariants(term: &Terminal) {
         }
     }
     let _ = term.selection_text();
+
+    // Blocks in view are in order, inside the screen and point at real blocks.
+    let mut previous_start = 0;
+    for block in &screen.blocks {
+        assert!(block.index < term.blocks().len());
+        assert!(
+            block.rows.start < block.rows.end && block.rows.end <= screen.rows,
+            "{block:?}"
+        );
+        assert!(block.rows.start >= previous_start, "{:?}", screen.blocks);
+        if let Some(row) = block.prompt_row {
+            assert_eq!(row, block.rows.start);
+        }
+        previous_start = block.rows.start;
+    }
 }
 
 proptest! {

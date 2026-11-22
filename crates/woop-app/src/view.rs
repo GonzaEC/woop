@@ -8,7 +8,9 @@ use iced::widget::canvas::{self, Action, Frame, Geometry};
 use std::time::{Duration, Instant};
 
 use iced::{Color, Event, Font, Pixels, Point, Rectangle, Renderer, Size, Theme, keyboard};
-use woop_term::{Cell, CursorShape, Screen, SelectionKind, SelectionPoint, TerminalSize};
+use woop_term::{
+    BlockState, Cell, CursorShape, Screen, ScreenBlock, SelectionKind, SelectionPoint, TerminalSize,
+};
 
 use crate::Message;
 use crate::keys;
@@ -155,6 +157,15 @@ impl canvas::Program<Message> for TerminalView<'_> {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let position = cursor.position_in(bounds)?;
                 let point = self.selection_point(position);
+                // A click on a block's bar in the left margin selects its
+                // output, ready to copy.
+                if position.x < PADDING
+                    && let Some(block) = self.block_at_row(point.row)
+                {
+                    return Some(
+                        Action::publish(Message::SelectBlockOutput(block.index)).and_capture(),
+                    );
+                }
                 let kind = match state.click(point) {
                     1 if state.modifiers.alt() => SelectionKind::Block,
                     1 => SelectionKind::Simple,
@@ -223,6 +234,7 @@ impl canvas::Program<Message> for TerminalView<'_> {
             for row in 0..self.screen.rows {
                 self.draw_row(frame, row);
             }
+            self.draw_blocks(frame);
             self.draw_cursor(frame);
         });
         vec![geometry]
@@ -383,6 +395,61 @@ impl TerminalView<'_> {
         }
     }
 
+    /// The block covering screen `row`, if any.
+    fn block_at_row(&self, row: usize) -> Option<&ScreenBlock> {
+        self.screen
+            .blocks
+            .iter()
+            .find(|block| block.rows.contains(&row))
+    }
+
+    /// Draws each block's bar in the left margin, a separator above its
+    /// prompt and, when the prompt row has room, its result and duration.
+    fn draw_blocks(&self, frame: &mut Frame) {
+        let metrics = self.metrics;
+        let width = self.screen.cols as f32 * metrics.cell_width;
+        for block in &self.screen.blocks {
+            let color = match (block.state, block.exit_code) {
+                (BlockState::Prompt, _) => continue,
+                (BlockState::Running, _) => self.palette.cursor,
+                (BlockState::Finished, Some(0)) => self.palette.success,
+                (BlockState::Finished, Some(_)) => self.palette.failure,
+                (BlockState::Finished, None) => self.palette.separator,
+            };
+            let top = self.origin(block.rows.start, 0).y;
+            let height = block.rows.len() as f32 * metrics.cell_height;
+            frame.fill_rectangle(Point::new(1.0, top), Size::new(3.0, height), color);
+
+            let Some(row) = block.prompt_row else {
+                continue;
+            };
+            if row > 0 {
+                frame.fill_rectangle(
+                    Point::new(PADDING, top),
+                    Size::new(width, 1.0),
+                    self.palette.separator,
+                );
+            }
+            let label = block_label(block);
+            let cols = label.chars().count();
+            let cells = self.screen.row(row);
+            // Only where the prompt row is blank, so text is never hidden.
+            if cols + 1 < cells.len()
+                && cells[cells.len() - cols - 1..]
+                    .iter()
+                    .all(|cell| cell.ch == ' ')
+            {
+                let mut run = label;
+                let look = Look {
+                    fg: color,
+                    bg: self.palette.background,
+                    font: metrics.font,
+                };
+                self.flush_text(frame, row, cells.len() - cols, &mut run, Some(look));
+            }
+        }
+    }
+
     fn draw_cursor(&self, frame: &mut Frame) {
         let Some(cursor) = self.screen.cursor else {
             return;
@@ -433,9 +500,67 @@ impl TerminalView<'_> {
     }
 }
 
+/// Text shown at the end of a block's prompt row: the exit code when the
+/// command failed, and how long it ran.
+fn block_label(block: &ScreenBlock) -> String {
+    let duration = block.duration.map(format_duration);
+    match (block.state, block.exit_code, duration) {
+        (BlockState::Running, ..) => "running".to_owned(),
+        (_, Some(code), Some(time)) if code != 0 => format!("exit {code} · {time}"),
+        (_, Some(code), None) if code != 0 => format!("exit {code}"),
+        (_, _, Some(time)) => time,
+        _ => String::new(),
+    }
+}
+
+/// Formats a command's duration compactly: `850 ms`, `4.2 s`, `3m 07s`.
+fn format_duration(duration: Duration) -> String {
+    let millis = duration.as_millis();
+    if millis < 1_000 {
+        format!("{millis} ms")
+    } else if millis < 60_000 {
+        format!("{:.1} s", duration.as_secs_f32())
+    } else {
+        let seconds = duration.as_secs();
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn formats_durations() {
+        assert_eq!(format_duration(Duration::from_millis(850)), "850 ms");
+        assert_eq!(format_duration(Duration::from_millis(4_230)), "4.2 s");
+        assert_eq!(format_duration(Duration::from_secs(187)), "3m 07s");
+    }
+
+    #[test]
+    fn labels_show_failures_and_durations() {
+        let block = |state, exit_code, duration| ScreenBlock {
+            index: 0,
+            prompt_row: Some(0),
+            rows: 0..1,
+            state,
+            exit_code,
+            duration,
+        };
+        let second = Some(Duration::from_secs(1));
+        assert_eq!(
+            block_label(&block(BlockState::Finished, Some(0), second)),
+            "1.0 s"
+        );
+        assert_eq!(
+            block_label(&block(BlockState::Finished, Some(2), second)),
+            "exit 2 · 1.0 s"
+        );
+        assert_eq!(
+            block_label(&block(BlockState::Running, None, None)),
+            "running"
+        );
+    }
 
     fn metrics() -> Metrics {
         Metrics {

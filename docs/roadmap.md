@@ -22,7 +22,9 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
   - [x] Mouse selection (drag, double click for words, triple click for lines, Alt+drag for blocks) and copy.
 - [ ] **3. Command blocks.**
   - [x] Shell integration for PowerShell, bash, zsh and fish; commands tracked as blocks with exit status and duration.
-  - [ ] Blocks in the interface: separators, status and duration, copy a block's command or output, jump between blocks, collapse output.
+  - [x] Blocks in the interface: a coloured bar per block (running, succeeded, failed), separators, exit code and duration, jump between blocks (Ctrl+Shift+Up/Down, Cmd+Up/Down on macOS), click the bar to select a block's output.
+  - [ ] Collapse a block's output, and copy a block's command.
+  - [ ] Milestone audit: security and performance review of the milestone, long robustness runs.
 - [ ] **4. Editor-like input.** Multi-line input with a free cursor, selection and editing shortcuts.
 - [ ] **5. Workspace.** Tabs, splits, command palette, TOML configuration with live reload, themes.
 - [ ] **6. Completions and assistant.** History and path completions, command specifications, optional AI providers (own API key or local model).

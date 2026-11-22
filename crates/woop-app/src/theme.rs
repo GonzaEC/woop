@@ -14,6 +14,12 @@ pub struct Palette {
     pub cursor: Color,
     /// Background of selected text.
     pub selection: Color,
+    /// Lines between command blocks.
+    pub separator: Color,
+    /// Commands that succeeded.
+    pub success: Color,
+    /// Commands that failed.
+    pub failure: Color,
     /// The 16 ANSI colours: 8 normal followed by 8 bright.
     pub ansi: [Color; 16],
 }
@@ -25,6 +31,9 @@ impl Default for Palette {
             background: rgb(0x16181d),
             cursor: rgb(0x7aa2f7),
             selection: rgb(0x2f3d58),
+            separator: rgb(0x2c313a),
+            success: rgb(0x98c379),
+            failure: rgb(0xe06c75),
             ansi: [
                 rgb(0x1f2229),
                 rgb(0xe06c75),

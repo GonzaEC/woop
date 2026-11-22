@@ -16,6 +16,8 @@ pub enum KeyAction {
     Copy,
     /// Scroll the view by a number of pages (positive is up).
     ScrollPages(i32),
+    /// Move the view to the previous (negative) or next command block.
+    JumpBlock(i32),
 }
 
 /// Clipboard shortcut conventions.
@@ -109,11 +111,19 @@ fn shortcut(key: &WindowKey, modifiers: WindowModifiers, context: KeyContext) ->
         Shortcuts::Unix => (ctrl_shift, ctrl_shift),
         Shortcuts::MacOs => (modifiers.logo(), modifiers.logo()),
     };
+    // Jumping between blocks: Cmd+Up/Down on macOS, Ctrl+Shift+Up/Down
+    // elsewhere (Ctrl+Up/Down alone are used by line editors).
+    let jump = match context.shortcuts {
+        Shortcuts::MacOs => modifiers.logo() && !modifiers.shift(),
+        Shortcuts::Windows | Shortcuts::Unix => ctrl_shift,
+    };
 
     match (key, character) {
         (_, Some('c')) if copy => Some(KeyAction::Copy),
         (_, Some('v')) if paste => Some(KeyAction::Paste),
         (WindowKey::Named(Named::Insert), _) if modifiers.shift() => Some(KeyAction::Paste),
+        (WindowKey::Named(Named::ArrowUp), _) if jump => Some(KeyAction::JumpBlock(-1)),
+        (WindowKey::Named(Named::ArrowDown), _) if jump => Some(KeyAction::JumpBlock(1)),
         (WindowKey::Named(Named::PageUp), _) if modifiers.shift() => {
             Some(KeyAction::ScrollPages(1))
         }
@@ -279,6 +289,30 @@ mod tests {
             input(&[0x03])
         );
         assert_eq!(press_with(Shortcuts::Unix, true, c(), ctrl), input(&[0x03]));
+    }
+
+    #[test]
+    fn block_jump_shortcuts() {
+        let ctrl_shift = WindowModifiers::CTRL | WindowModifiers::SHIFT;
+        let up = || WindowKey::Named(Named::ArrowUp);
+        let down = || WindowKey::Named(Named::ArrowDown);
+        assert_eq!(
+            press_with(Shortcuts::Windows, false, up(), ctrl_shift),
+            Some(KeyAction::JumpBlock(-1))
+        );
+        assert_eq!(
+            press_with(Shortcuts::Unix, false, down(), ctrl_shift),
+            Some(KeyAction::JumpBlock(1))
+        );
+        assert_eq!(
+            press_with(Shortcuts::MacOs, false, up(), WindowModifiers::LOGO),
+            Some(KeyAction::JumpBlock(-1))
+        );
+        // Ctrl+Up alone still reaches the shell.
+        assert_eq!(
+            press_with(Shortcuts::Windows, false, up(), WindowModifiers::CTRL),
+            input(b"\x1b[1;5A")
+        );
     }
 
     #[test]

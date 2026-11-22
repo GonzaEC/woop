@@ -7,6 +7,7 @@
 //! resized, because reflowing text changes how many rows a line takes but
 //! not how many lines there are.
 
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::Term;
@@ -117,6 +118,32 @@ pub struct BlockRows {
     pub end: Option<usize>,
 }
 
+/// A block as it appears in the current view, for drawing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScreenBlock {
+    /// Index of the block in [`crate::Terminal::blocks`].
+    pub index: usize,
+    /// Screen row of the prompt, if it is in view.
+    pub prompt_row: Option<usize>,
+    /// Screen rows the block covers, clipped to the view: from its prompt
+    /// up to the row where the next prompt starts.
+    pub rows: Range<usize>,
+    /// Where the block is in its life cycle.
+    pub state: BlockState,
+    /// Exit code, once the command finished and the shell reported one.
+    pub exit_code: Option<i32>,
+    /// How long the command ran, once it finished.
+    pub duration: Option<Duration>,
+}
+
+/// Where an anchor is relative to the view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InView {
+    Above,
+    Row(usize),
+    Below,
+}
+
 /// A position in the scrollback that survives reflow. Anchors compare by
 /// logical line, then by offset: the order they appear in the text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -172,6 +199,17 @@ impl BlockList {
                 // never before its own output.
                 if let Some(block) = self.current(BlockState::Running) {
                     block.end = block.output.max(Some(anchor));
+                }
+                // Blocks that extend past the new prompt were overwritten
+                // (for example by output inside a scroll region, which moves
+                // text without sending it to the scrollback). Blocks are kept
+                // in order, so they are all at the end of the list.
+                while self
+                    .blocks
+                    .last()
+                    .is_some_and(|block| block.anchors().any(|other| other > anchor))
+                {
+                    self.blocks.pop();
                 }
                 self.blocks.push(Block::new(anchor));
                 if self.blocks.len() > MAX_BLOCKS {
@@ -264,6 +302,93 @@ impl BlockList {
         self.history_lines += (-(rows as i32)..0)
             .filter(|&row| !wraps(term, Line(row)))
             .count();
+    }
+
+    /// Returns the blocks that appear in the current view, oldest first.
+    ///
+    /// Costs one walk over the rows between the view and the screen plus
+    /// the view itself, whatever the number of blocks: this runs for every
+    /// frame (ADR 0013).
+    pub(crate) fn visible<T>(&self, term: &Term<T>) -> Vec<ScreenBlock> {
+        let grid = term.grid();
+        let view_rows = grid.screen_lines();
+        let top = -(grid.display_offset() as i32);
+        // Logical line of each row in the view.
+        let above_screen = (top..0).filter(|&row| !wraps(term, Line(row))).count();
+        let mut line = self.history_lines.saturating_sub(above_screen);
+        let mut row_lines = Vec::with_capacity(view_rows);
+        for row in top..top + view_rows as i32 {
+            row_lines.push(line);
+            if !wraps(term, Line(row)) {
+                line += 1;
+            }
+        }
+        let (Some(&first), Some(&last)) = (row_lines.first(), row_lines.last()) else {
+            return Vec::new();
+        };
+        let locate = |anchor: Anchor| {
+            if anchor.line < first {
+                InView::Above
+            } else if anchor.line > last {
+                InView::Below
+            } else {
+                // The first row of the logical line, then its wrapped rows.
+                let start = row_lines.partition_point(|&l| l < anchor.line);
+                let wrapped = anchor.offset / grid.columns().max(1);
+                let rows_of_line = row_lines[start..].partition_point(|&l| l == anchor.line);
+                InView::Row(start + wrapped.min(rows_of_line.saturating_sub(1)))
+            }
+        };
+
+        let mut visible = Vec::new();
+        for (index, block) in self.blocks.iter().enumerate().rev() {
+            let end = block.end.map(locate);
+            if end == Some(InView::Above) {
+                break;
+            }
+            let (start, prompt_row) = match locate(block.prompt) {
+                InView::Above => (0, None),
+                InView::Row(row) => (row, Some(row)),
+                InView::Below => continue,
+            };
+            let stop = match end {
+                Some(InView::Row(row)) => row.max(start + 1),
+                _ => view_rows,
+            };
+            visible.push(ScreenBlock {
+                index,
+                prompt_row,
+                rows: start..stop.min(view_rows),
+                state: block.state(),
+                exit_code: block.exit_code,
+                duration: block.duration,
+            });
+        }
+        visible.reverse();
+        visible
+    }
+
+    /// Returns the row of every block's prompt, counted from the top of the
+    /// scrollback, in one walk over the grid.
+    pub(crate) fn prompt_rows<T>(&self, term: &Term<T>) -> Vec<usize> {
+        let grid = term.grid();
+        let top = grid.topmost_line().0;
+        let mut rows = Vec::with_capacity(self.blocks.len());
+        let mut prompts = self.blocks.iter().map(|block| block.prompt.line).peekable();
+        let mut line = 0;
+        for (absolute, row) in (top..=grid.bottommost_line().0).enumerate() {
+            while prompts.peek().is_some_and(|&prompt| prompt == line) {
+                rows.push(absolute);
+                prompts.next();
+            }
+            if prompts.peek().is_none() {
+                break;
+            }
+            if !wraps(term, Line(row)) {
+                line += 1;
+            }
+        }
+        rows
     }
 
     /// Returns the rows of `block` in the current grid.
@@ -620,6 +745,115 @@ mod tests {
         let rows = term.block_rows(&term.blocks()[1]).expect("rows");
         let screen_row = rows.prompt - (term.history_size() - term.scroll_offset());
         assert_eq!(term.screen_lines()[screen_row], "$");
+    }
+
+    #[test]
+    fn screens_list_the_blocks_in_view() {
+        let output = format!(
+            "{}second\r\n{C}b\r\nc\r\n{}{A}$ {B}",
+            run("first", "a\r\n", 0),
+            d(2)
+        );
+        let term = terminal(10, 30, &output);
+        let blocks = term.screen().blocks;
+
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].index, 0);
+        assert_eq!(blocks[0].prompt_row, Some(0));
+        // Each block ends where the next prompt starts.
+        assert_eq!(blocks[0].rows, 0..2);
+        assert_eq!(blocks[0].exit_code, Some(0));
+        assert_eq!(blocks[1].rows, 2..5);
+        assert_eq!(blocks[1].exit_code, Some(2));
+        assert_eq!(blocks[2].state, BlockState::Prompt);
+        assert_eq!(blocks[2].rows, 5..10);
+    }
+
+    #[test]
+    fn blocks_above_the_view_are_clipped_or_left_out() {
+        let lines = "x\r\n".repeat(20);
+        let mut term = terminal(5, 30, &run("one", &lines, 0));
+        term.advance(run("two", "y\r\n", 0).as_bytes());
+
+        // At the bottom, the first block's prompt is far above the view.
+        let blocks = term.screen().blocks;
+        assert_eq!(blocks.first().map(|b| b.index), Some(0));
+        assert_eq!(blocks[0].prompt_row, None);
+        assert_eq!(blocks[0].rows.start, 0);
+
+        // Scrolled to the very top, only the first block is in view.
+        term.scroll(1_000);
+        let blocks = term.screen().blocks;
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].prompt_row, Some(0));
+    }
+
+    #[test]
+    fn jumps_between_blocks() {
+        let mut output = String::new();
+        for name in ["one", "two", "three"] {
+            output += &format!("{A}$ {B}{name}\r\n{C}{}{}", "o\r\n".repeat(8), d(0));
+        }
+        output += &format!("{A}$ {B}");
+        let mut term = terminal(4, 30, &output);
+        // The first row of the view, which follows the scroll position.
+        let top_line = |term: &Terminal| {
+            let screen = term.screen();
+            let text: String = screen.row(0).iter().map(|cell| cell.ch).collect();
+            text.trim_end().to_owned()
+        };
+
+        assert!(term.jump_to_block(-1));
+        assert_eq!(top_line(&term), "$ three");
+        assert!(term.jump_to_block(-1));
+        assert_eq!(top_line(&term), "$ two");
+        assert!(term.jump_to_block(-1));
+        assert_eq!(top_line(&term), "$ one");
+        assert!(!term.jump_to_block(-1), "no block before the first");
+        assert!(term.jump_to_block(1));
+        assert_eq!(top_line(&term), "$ two");
+    }
+
+    #[test]
+    fn selects_a_block_output() {
+        let mut term = terminal(10, 30, &run("ls", "alpha\r\nbeta\r\n", 0));
+
+        assert!(term.select_block_output(0));
+        assert_eq!(term.selection_text().as_deref(), Some("alpha\nbeta\n"));
+        assert!(!term.select_block_output(1), "the prompt has no output");
+        assert!(!term.select_block_output(9));
+    }
+
+    #[test]
+    fn a_prompt_above_older_blocks_replaces_them() {
+        // Inside a scroll region, text moves up without reaching the
+        // scrollback, so a new prompt can land above an older block.
+        let mut term = terminal(
+            4,
+            30,
+            &format!("\x1b[2;4r{}", run("one", "a\r\nb\r\nc\r\n", 0)),
+        );
+        term.advance(format!("\x1b[H{A}$ {B}").as_bytes());
+
+        let blocks = term.screen().blocks;
+        assert!(
+            blocks
+                .windows(2)
+                .all(|pair| pair[0].rows.start <= pair[1].rows.start),
+            "{blocks:?}"
+        );
+        assert_eq!(
+            term.blocks().last().map(Block::state),
+            Some(BlockState::Prompt)
+        );
+    }
+
+    #[test]
+    fn full_screen_programs_hide_blocks() {
+        let mut term = terminal(5, 30, &run("vim", "", 0));
+        term.advance(b"\x1b[?1049h");
+        assert!(term.screen().blocks.is_empty());
+        assert!(!term.jump_to_block(-1));
     }
 
     #[test]
