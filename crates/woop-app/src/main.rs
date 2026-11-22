@@ -10,7 +10,7 @@ use iced::widget::canvas;
 use iced::{Element, Length, Subscription, Task, clipboard};
 use woop_term::{
     Screen, SelectionKind, SelectionPoint, Session, ShellCommand, Terminal, TerminalEvent,
-    TerminalSize, input,
+    TerminalSize, input, shell_integration,
 };
 
 use keys::KeyAction;
@@ -176,7 +176,8 @@ impl Woop {
         let notify = move || {
             let _ = sender.unbounded_send(());
         };
-        match Session::spawn_with_notifier(&ShellCommand::default_shell(), self.size, notify) {
+        let command = shell_integration::apply(ShellCommand::default_shell());
+        match Session::spawn_with_notifier(&command, self.size, notify) {
             Ok(session) => self.session = Some(session),
             Err(error) => {
                 eprintln!("woop: failed to start the shell: {error}");

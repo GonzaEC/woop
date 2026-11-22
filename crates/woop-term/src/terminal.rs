@@ -1,6 +1,7 @@
 //! Terminal state: escape sequence parsing and the screen grid.
 
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Instant;
 
 use alacritty_terminal::Term;
 use alacritty_terminal::event::{Event, EventListener};
@@ -11,6 +12,8 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 
+use crate::blocks::{self, Block, BlockList, BlockRows};
+use crate::marks::MarkScanner;
 use crate::screen::Screen;
 use crate::selection::{SelectionKind, SelectionPoint};
 
@@ -111,24 +114,87 @@ pub struct Terminal {
     parser: Processor,
     events: Receiver<TerminalEvent>,
     size: TerminalSize,
+    marks: MarkScanner,
+    blocks: BlockList,
+    /// History size after the last update, to notice when it is cleared.
+    history: usize,
 }
+
+/// Lines of scrollback kept.
+pub(crate) const HISTORY_LINES: usize = 10_000;
+
+/// Output is fed to the emulator in pieces of at most this many bytes, and
+/// the history is trimmed back to [`HISTORY_LINES`] after each one. A byte
+/// adds at most one line, so the emulator never drops history lines on its
+/// own and block positions can be adjusted exactly.
+const FEED_CHUNK: usize = 1024;
 
 impl Terminal {
     /// Creates an empty terminal of the given size.
     pub fn new(size: TerminalSize) -> Self {
         let (sender, events) = mpsc::channel();
-        let term = Term::new(Config::default(), &size, EventProxy { sender });
+        let config = Config {
+            scrolling_history: HISTORY_LINES + FEED_CHUNK,
+            ..Config::default()
+        };
+        let term = Term::new(config, &size, EventProxy { sender });
         Self {
             term,
             parser: Processor::new(),
             events,
             size,
+            marks: MarkScanner::default(),
+            blocks: BlockList::default(),
+            history: 0,
         }
     }
 
     /// Processes output produced by the process running in the terminal.
     pub fn advance(&mut self, bytes: &[u8]) {
-        self.parser.advance(&mut self.term, bytes);
+        let now = Instant::now();
+        let mut start = 0;
+        for (end, mark) in self.marks.scan(bytes) {
+            self.feed(&bytes[start..end]);
+            // Full-screen applications do not emit marks, and the alternate
+            // screen has no history for blocks to live in.
+            if !self.term.mode().contains(TermMode::ALT_SCREEN) {
+                self.blocks.apply(mark, &self.term, now);
+            }
+            start = end;
+        }
+        self.feed(&bytes[start..]);
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        for piece in bytes.chunks(FEED_CHUNK) {
+            self.parser.advance(&mut self.term, piece);
+            self.update_history(false);
+        }
+    }
+
+    /// Trims the history to [`HISTORY_LINES`] and keeps block positions in
+    /// step with it.
+    fn update_history(&mut self, resized: bool) {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return;
+        }
+        let history = self.term.grid().history_size();
+        // The history only shrinks on its own when it is cleared (or when a
+        // resize pulls lines back onto the screen), and it only reaches the
+        // emulator's limit if lines may have been dropped without notice.
+        // Either way, block positions can no longer be trusted.
+        if (!resized && history < self.history) || history >= HISTORY_LINES + FEED_CHUNK {
+            self.blocks.clear();
+        }
+        if history > HISTORY_LINES {
+            let excess = history - HISTORY_LINES;
+            let removed = blocks::line_starts_in_top_rows(&self.term, excess);
+            let grid = self.term.grid_mut();
+            grid.update_history(HISTORY_LINES);
+            grid.update_history(HISTORY_LINES + FEED_CHUNK);
+            self.blocks.remove_top_lines(removed);
+        }
+        self.history = self.term.grid().history_size();
     }
 
     /// Changes the screen size, reflowing content as needed.
@@ -136,7 +202,30 @@ impl Terminal {
         if size != self.size {
             self.term.resize(size);
             self.size = size;
+            self.update_history(true);
         }
+    }
+
+    /// Returns the command blocks, oldest first. Blocks are only produced
+    /// when the shell runs Woop's shell integration.
+    pub fn blocks(&self) -> &[Block] {
+        self.blocks.as_slice()
+    }
+
+    /// Returns the rows `block` spans, or `None` while a full-screen
+    /// application is shown or once the block left the scrollback.
+    pub fn block_rows(&self, block: &Block) -> Option<BlockRows> {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return None;
+        }
+        BlockList::rows(&self.term, block)
+    }
+
+    /// Number of lines in the scrollback above the screen. Together with
+    /// [`Terminal::scroll_offset`] it converts [`BlockRows`] into screen
+    /// rows: `screen_row = row - (history_size - scroll_offset)`.
+    pub fn history_size(&self) -> usize {
+        self.term.grid().history_size()
     }
 
     /// Returns the current screen size.
