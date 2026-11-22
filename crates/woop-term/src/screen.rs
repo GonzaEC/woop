@@ -4,10 +4,13 @@
 //! types, so the interface can draw them without depending on the emulation
 //! library.
 
-use alacritty_terminal::term::RenderableContent;
-
-use crate::blocks::ScreenBlock;
+use alacritty_terminal::Term;
+use alacritty_terminal::event::EventListener;
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::Flags;
+
+use crate::blocks::{ScreenBlock, ViewLine};
 use alacritty_terminal::vte::ansi::{
     Color as AnsiColor, CursorShape as AnsiCursorShape, NamedColor,
 };
@@ -142,9 +145,16 @@ impl Screen {
         &self.cells[row * self.cols..(row + 1) * self.cols]
     }
 
-    pub(crate) fn from_content(content: RenderableContent<'_>, rows: usize, cols: usize) -> Self {
-        let mut cells = vec![Cell::default(); rows * cols];
-        let offset = content.display_offset as i32;
+    /// Copies the rows listed in `view` out of the emulator. Each entry is a
+    /// grid line, or a summary standing for the hidden output of a collapsed
+    /// block.
+    pub(crate) fn from_view<T: EventListener>(
+        term: &Term<T>,
+        view: &[ViewLine],
+        cols: usize,
+    ) -> Self {
+        let rows = view.len();
+        let content = term.renderable_content();
         let colors = content.colors;
         let selection = content.selection;
         let resolve = |color: AnsiColor| -> Color {
@@ -161,41 +171,53 @@ impl Screen {
             }
         };
 
-        for indexed in content.display_iter {
-            let row = indexed.point.line.0 + offset;
-            let col = indexed.point.column.0;
-            let (Ok(row), true) = (usize::try_from(row), col < cols) else {
-                continue;
+        let grid = term.grid();
+        let grid_cols = grid.columns().min(cols);
+        let mut cells = vec![Cell::default(); rows * cols];
+        for (row, entry) in view.iter().enumerate() {
+            let line = match *entry {
+                ViewLine::Grid(line) => line,
+                ViewLine::Folded { hidden, .. } => {
+                    let summary = format!("  \u{22ef} {hidden} lines hidden");
+                    for (col, ch) in summary.chars().take(cols).enumerate() {
+                        let cell = &mut cells[row * cols + col];
+                        cell.ch = ch;
+                        cell.style.dim = true;
+                    }
+                    continue;
+                }
+                ViewLine::Blank => continue,
             };
-            if row >= rows {
-                continue;
+            let source_row = &grid[Line(line)];
+            for col in 0..grid_cols {
+                let source = &source_row[Column(col)];
+                let flags = source.flags;
+                let cell = &mut cells[row * cols + col];
+                cell.ch = if flags.contains(Flags::HIDDEN) {
+                    ' '
+                } else {
+                    source.c
+                };
+                if let Some(extra) = source.zerowidth() {
+                    cell.combining.extend_from_slice(extra);
+                }
+                cell.fg = resolve(source.fg);
+                cell.bg = resolve(source.bg);
+                cell.style = CellStyle {
+                    bold: flags.contains(Flags::BOLD),
+                    dim: flags.contains(Flags::DIM) || is_dim(source.fg),
+                    italic: flags.contains(Flags::ITALIC),
+                    underline: flags.intersects(Flags::ALL_UNDERLINES),
+                    strikethrough: flags.contains(Flags::STRIKEOUT),
+                    inverse: flags.contains(Flags::INVERSE),
+                    hidden: flags.contains(Flags::HIDDEN),
+                };
+                cell.wide = flags.contains(Flags::WIDE_CHAR);
+                cell.spacer =
+                    flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER);
+                cell.selected = selection
+                    .is_some_and(|range| range.contains(Point::new(Line(line), Column(col))));
             }
-            let source = indexed.cell;
-            let flags = source.flags;
-            let cell = &mut cells[row * cols + col];
-            cell.ch = if flags.contains(Flags::HIDDEN) {
-                ' '
-            } else {
-                source.c
-            };
-            if let Some(extra) = source.zerowidth() {
-                cell.combining.extend_from_slice(extra);
-            }
-            cell.fg = resolve(source.fg);
-            cell.bg = resolve(source.bg);
-            cell.style = CellStyle {
-                bold: flags.contains(Flags::BOLD),
-                dim: flags.contains(Flags::DIM) || is_dim(source.fg),
-                italic: flags.contains(Flags::ITALIC),
-                underline: flags.intersects(Flags::ALL_UNDERLINES),
-                strikethrough: flags.contains(Flags::STRIKEOUT),
-                inverse: flags.contains(Flags::INVERSE),
-                hidden: flags.contains(Flags::HIDDEN),
-            };
-            cell.wide = flags.contains(Flags::WIDE_CHAR);
-            cell.spacer =
-                flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER);
-            cell.selected = selection.is_some_and(|range| range.contains(indexed.point));
         }
 
         // A wide character and its spacer are selected together.
@@ -208,9 +230,12 @@ impl Screen {
         }
 
         let cursor = cursor_shape(content.cursor.shape).and_then(|shape| {
-            let row = usize::try_from(content.cursor.point.line.0 + offset).ok()?;
+            let line = content.cursor.point.line.0;
+            let row = view
+                .iter()
+                .position(|entry| *entry == ViewLine::Grid(line))?;
             let col = content.cursor.point.column.0;
-            (row < rows && col < cols).then_some(Cursor { row, col, shape })
+            (col < cols).then_some(Cursor { row, col, shape })
         });
 
         Self {

@@ -157,14 +157,18 @@ impl canvas::Program<Message> for TerminalView<'_> {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let position = cursor.position_in(bounds)?;
                 let point = self.selection_point(position);
-                // A click on a block's bar in the left margin selects its
-                // output, ready to copy.
+                // On a block's bar in the left margin: a click selects its
+                // output, a double click collapses or expands it, and
+                // Alt+click copies its command.
                 if position.x < PADDING
                     && let Some(block) = self.block_at_row(point.row)
                 {
-                    return Some(
-                        Action::publish(Message::SelectBlockOutput(block.index)).and_capture(),
-                    );
+                    let message = match state.click(point) {
+                        _ if state.modifiers.alt() => Message::CopyBlockCommand(block.index),
+                        1 => Message::SelectBlockOutput(block.index),
+                        _ => Message::ToggleCollapse(block.index),
+                    };
+                    return Some(Action::publish(message).and_capture());
                 }
                 let kind = match state.click(point) {
                     1 if state.modifiers.alt() => SelectionKind::Block,
@@ -546,6 +550,7 @@ mod tests {
             state,
             exit_code,
             duration,
+            collapsed: false,
         };
         let second = Some(Duration::from_secs(1));
         assert_eq!(

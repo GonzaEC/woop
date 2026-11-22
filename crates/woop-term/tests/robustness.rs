@@ -90,6 +90,7 @@ enum Op {
     Resize(u16, u16),
     Scroll(i32),
     Select(SelectionKind, usize, usize, usize, usize),
+    Collapse(usize),
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -103,6 +104,7 @@ fn op() -> impl Strategy<Value = Op> {
         6 => output(60).prop_map(Op::Output),
         1 => (1u16..40, 1u16..120).prop_map(|(rows, cols)| Op::Resize(rows, cols)),
         1 => (-50i32..50).prop_map(Op::Scroll),
+        1 => (0usize..8).prop_map(Op::Collapse),
         1 => (kind, 0usize..60, 0usize..200, 0usize..60, 0usize..200)
             .prop_map(|(kind, r1, c1, r2, c2)| Op::Select(kind, r1, c1, r2, c2)),
     ]
@@ -218,6 +220,9 @@ proptest! {
                 Op::Output(bytes) => term.advance(&bytes),
                 Op::Resize(rows, cols) => term.resize(TerminalSize::new(rows, cols)),
                 Op::Scroll(lines) => term.scroll(lines),
+                Op::Collapse(index) => {
+                    let _ = term.toggle_collapsed(index);
+                }
                 Op::Select(kind, r1, c1, r2, c2) => {
                     term.start_selection(kind, SelectionPoint::new(r1, c1));
                     term.extend_selection(SelectionPoint::new(r2, c2));
