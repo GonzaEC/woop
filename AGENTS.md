@@ -20,6 +20,7 @@ Judge every change in this order; when two conflict, the earlier one wins, and a
    - Bound every buffer, channel and history fed by program output.
    - No `unsafe` without an ADR. Write files only to the user's own directories, with permissions that keep other users out. No network access except user-configured AI providers. Never log or store secrets.
    - Every new dependency needs a reason and an evaluation (maintenance, vulnerabilities, licence, `unsafe`, cost); see the [`add-dependency`](.claude/skills/add-dependency/SKILL.md) skill. Prefer the standard library and well-maintained crates.
+   - `deny.toml`, `.github/workflows/` and `.github/dependabot.yml` are security controls: changing them is a security change. When a new advisory makes the dependency check fail, upgrade the crate; if that is impossible (the fix must come from upstream), add the advisory to `ignore` in `deny.toml` with how the crate reaches Woop and why the risk is acceptable, after a security review. Never weaken the policy to make CI pass.
 2. **Tests, so nothing breaks.** Every behaviour change has tests; every bug fix starts with a test that fails without it (see the [`fix-bug`](.claude/skills/fix-bug/SKILL.md) skill). Code that parses untrusted input must never panic or hang on arbitrary bytes, and has tests that prove it.
 3. **Performance.** Keep the read, parse and draw paths free of per-byte or per-cell allocations, locks and blocking calls, and do no work while the shell is idle. Changes to hot paths include measurements from release builds.
 
@@ -30,10 +31,11 @@ cargo build                                            # build everything
 cargo test --workspace                                 # all tests, including end-to-end PTY tests
 cargo fmt --all                                        # format
 cargo clippy --workspace --all-targets -- -D warnings  # lint; CI treats warnings as errors
+cargo deny check                                       # dependency advisories, licences, sources (cargo install cargo-deny)
 cargo run -p woop-term --example headless -- "echo hi" # run the core without a window
 ```
 
-Run `fmt`, `clippy` and `test` before declaring any change finished. These are exactly what CI checks.
+Run `fmt`, `clippy` and `test` before declaring any change finished, and `cargo deny check` when dependencies change. These are exactly what CI checks.
 
 On Windows, if compiling a dependency crashes `rustc` with `STATUS_STACK_BUFFER_OVERRUN`, raise its stack size for that build: `RUST_MIN_STACK=67108864 cargo build` (PowerShell: `$env:RUST_MIN_STACK = 67108864`).
 
@@ -82,7 +84,7 @@ Every non-trivial change gets a general review before it is merged. Two areas al
 | Review | When | Checklist |
 | --- | --- | --- |
 | General | Every non-trivial change | [`reviewer.md`](.claude/agents/reviewer.md) |
-| Security | The change touches program output handling (escape sequences, marks, replies), input or paste, the clipboard, process spawning, files Woop writes, shell integration scripts, dependencies or secrets | [`security-reviewer.md`](.claude/agents/security-reviewer.md) |
+| Security | The change touches program output handling (escape sequences, marks, replies), input or paste, the clipboard, process spawning, files Woop writes, shell integration scripts, dependencies, CI workflows, `deny.toml` or secrets | [`security-reviewer.md`](.claude/agents/security-reviewer.md) |
 | Performance | The change touches reading, parsing, block tracking, snapshots or drawing, start-up or memory use | [`performance-reviewer.md`](.claude/agents/performance-reviewer.md) |
 
 Security findings are fixed before anything else in the pull request.

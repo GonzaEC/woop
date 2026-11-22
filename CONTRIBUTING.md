@@ -27,6 +27,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+If you changed dependencies, also run `cargo deny check` (install it with `cargo install cargo-deny --locked`). It checks for known vulnerabilities, licences and sources, using the policy in `deny.toml`.
+
 ## Priorities
 
 Woop's priorities, in order: **security, then tests, then performance**, all ahead of new features. When they conflict, the earlier one wins. [ADR 0012](docs/adr/0012-security-tests-performance-priorities.md) explains them in detail.
