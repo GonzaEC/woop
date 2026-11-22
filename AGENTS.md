@@ -104,7 +104,7 @@ The repository is public. Documentation, comments, commit messages and pull requ
 
 ## Commits and pull requests
 
-- Work on a branch; never push to `main`. Changes merge through squash-merged pull requests that pass CI ([ADR 0009](docs/adr/0009-pull-requests-gated-by-ci.md)).
+- Work on a branch; never push to `main`. Changes merge through squash-merged pull requests that pass CI ([ADR 0009](docs/adr/0009-pull-requests-gated-by-ci.md)). GitHub enforces this for everyone, administrators included: `main` accepts no direct or force pushes, a pull request needs the four CI checks green, an up-to-date branch (`gh pr update-branch <number>` when it falls behind) and resolved conversations, and only squash merges are allowed. Branches are deleted when merged.
 - Commit messages follow [Conventional Commits](https://www.conventionalcommits.org): `feat(term): ...`, `fix(pty): ...`, `docs: ...`.
 - Do not add tool-attribution trailers or footers (such as `Co-Authored-By` lines for AI tools, or "generated with" notes) to commits or pull requests. The person submitting a change is its author and is responsible for understanding and testing it.
 - Pull request descriptions use the template: a summary of what and why, and how it was tested on which platforms.
