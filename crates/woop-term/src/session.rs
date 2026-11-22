@@ -43,47 +43,91 @@ type Notify = Arc<dyn Fn() + Send + Sync>;
 /// blocks on a process that does not read.
 struct InputQueue {
     sender: mpsc::Sender<Vec<u8>>,
-    /// Bytes sent to the writer thread and not yet written.
+    /// Memory held by queued input: its bytes plus [`CHUNK_OVERHEAD`] per
+    /// chunk.
     pending: Arc<AtomicUsize>,
+    /// Set when the session closes: input still queued is then discarded,
+    /// never written, since the process it was meant for is gone and
+    /// whatever still reads the pseudo-terminal must not receive it.
+    closed: Arc<AtomicBool>,
+    /// Cleared when the writer thread stops because the input was closed.
+    alive: Arc<AtomicBool>,
 }
+
+/// Memory counted for each queued chunk besides its bytes, so that many
+/// tiny writes cannot hold far more memory than the backlog limit says.
+const CHUNK_OVERHEAD: usize = 64;
+
+/// Queued input is written in pieces of this size, checking between pieces
+/// whether the session was closed, so a long paste stops soon after.
+const WRITE_PIECE: usize = 4 * 1024;
 
 impl InputQueue {
     fn start(mut writer: Box<dyn Write + Send>) -> std::io::Result<Self> {
         let (sender, chunks) = mpsc::channel::<Vec<u8>>();
         let pending = Arc::new(AtomicUsize::new(0));
-        let written = Arc::clone(&pending);
+        let closed = Arc::new(AtomicBool::new(false));
+        let alive = Arc::new(AtomicBool::new(true));
+        let (written, stop, running) = (
+            Arc::clone(&pending),
+            Arc::clone(&closed),
+            Arc::clone(&alive),
+        );
         thread::Builder::new()
             .name("woop-pty-writer".into())
             .spawn(move || {
                 // Ends when the session is dropped (the channel closes) or the
-                // process input is closed (a write fails).
-                for chunk in chunks {
-                    let result = writer.write_all(&chunk).and_then(|()| writer.flush());
-                    written.fetch_sub(chunk.len(), Ordering::AcqRel);
-                    if result.is_err() {
-                        break;
+                // process input is closed (a write fails). A write the
+                // process never reads still blocks until it exits.
+                'chunks: for chunk in chunks {
+                    written.fetch_sub(chunk.len() + CHUNK_OVERHEAD, Ordering::AcqRel);
+                    for piece in chunk.chunks(WRITE_PIECE) {
+                        if stop.load(Ordering::Acquire) {
+                            continue 'chunks;
+                        }
+                        if writer
+                            .write_all(piece)
+                            .and_then(|()| writer.flush())
+                            .is_err()
+                        {
+                            break 'chunks;
+                        }
                     }
                 }
+                running.store(false, Ordering::Release);
             })?;
-        Ok(Self { sender, pending })
+        Ok(Self {
+            sender,
+            pending,
+            closed,
+            alive,
+        })
     }
 
     /// Queues `bytes` without blocking, or refuses them if the backlog is
-    /// full.
+    /// full or the process input is closed.
     fn send(&self, bytes: &[u8]) -> Result<()> {
         if bytes.is_empty() {
             return Ok(());
         }
-        let len = bytes.len();
-        let before = self.pending.fetch_add(len, Ordering::AcqRel);
-        if before + len > MAX_PENDING_INPUT {
-            self.pending.fetch_sub(len, Ordering::AcqRel);
-            return Err(PtyError::InputBacklog(len));
+        if !self.alive.load(Ordering::Acquire) {
+            return Err(PtyError::Stream("the process input is closed".into()));
+        }
+        let cost = bytes.len() + CHUNK_OVERHEAD;
+        let before = self.pending.fetch_add(cost, Ordering::AcqRel);
+        if before + cost > MAX_PENDING_INPUT {
+            self.pending.fetch_sub(cost, Ordering::AcqRel);
+            return Err(PtyError::InputBacklog(bytes.len()));
         }
         self.sender.send(bytes.to_vec()).map_err(|_| {
-            self.pending.fetch_sub(len, Ordering::AcqRel);
+            self.pending.fetch_sub(cost, Ordering::AcqRel);
             PtyError::Stream("the process input is closed".into())
         })
+    }
+
+    /// Discards input that is still queued instead of writing it.
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
     }
 }
 
@@ -92,11 +136,16 @@ impl InputQueue {
 fn split_replies(events: Vec<TerminalEvent>, budget: usize) -> (Vec<u8>, Vec<TerminalEvent>) {
     let mut replies = Vec::new();
     let mut others = Vec::new();
+    let mut full = false;
     for event in events {
         match event {
             TerminalEvent::Reply(reply) => {
-                if replies.len() + reply.len() <= budget {
+                // Once one reply does not fit, later ones are dropped too, so
+                // the program never receives answers out of order.
+                if !full && replies.len() + reply.len() <= budget {
                     replies.extend_from_slice(reply.as_bytes());
+                } else {
+                    full = true;
                 }
             }
             other => others.push(other),
@@ -342,6 +391,9 @@ fn drain(output: &Receiver<Vec<u8>>, budget: usize, mut apply: impl FnMut(&[u8])
 
 impl Drop for Session {
     fn drop(&mut self) {
+        // Input not yet written must not reach whatever outlives the shell
+        // on this pseudo-terminal.
+        self.input.close();
         let _ = self.pty.kill();
         // The reader thread exits on its own once the pseudo-terminal closes;
         // it is detached rather than joined so dropping never blocks.
@@ -449,8 +501,50 @@ mod tests {
 
         let (replies, others) = split_replies(events, 6);
 
-        assert_eq!(replies, b"123459");
+        // Only a prefix is kept: skipping one reply and sending a later one
+        // would give the program answers out of order.
+        assert_eq!(replies, b"12345");
         assert_eq!(others, [TerminalEvent::Bell]);
+    }
+
+    #[test]
+    fn input_left_when_the_session_closes_is_discarded() {
+        use std::sync::Mutex;
+
+        /// Records what reaches the process; the first write waits.
+        struct Recorder {
+            written: Arc<Mutex<Vec<u8>>>,
+            release: Receiver<()>,
+        }
+        impl Write for Recorder {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                let _ = self.release.recv();
+                self.written.lock().expect("lock").extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let (release, released) = mpsc::channel();
+        let input = InputQueue::start(Box::new(Recorder {
+            written: Arc::clone(&written),
+            release: released,
+        }))
+        .expect("start writer");
+        input.send(b"typed before closing").expect("send");
+        input.send(b"must never arrive").expect("send");
+        // Let the writer pick up the first chunk, then close the session.
+        thread::sleep(Duration::from_millis(100));
+        input.close();
+        drop(input);
+        drop(release);
+
+        thread::sleep(Duration::from_millis(200));
+        let written = written.lock().expect("lock").clone();
+        assert!(!written.windows(4).any(|w| w == b"must"), "{written:?}");
     }
 
     #[test]

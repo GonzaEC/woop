@@ -10,9 +10,9 @@
 ## Decision
 
 - **A writer thread per session.** `Pty::take_writer` hands the input stream to a thread that writes queued chunks in order. `Session::write` only queues, so it never blocks.
-- **A bounded backlog.** At most 16 MiB of input may wait for the process. Beyond that, `Session::write` refuses the input with `PtyError::InputBacklog` instead of growing memory; nothing is sent partially.
-- **A reply budget.** Each `Session::pump` sends at most 16 KiB of replies to queries; replies past the budget, or refused because of the backlog, are dropped. Replies are best effort: a process that floods queries without reading the answers loses them.
-- **Shutdown.** The writer thread ends when the session is dropped (its queue closes) or when the process input is closed (a write fails).
+- **A bounded backlog.** At most 16 MiB of input may wait for the process, counting a fixed overhead per queued chunk so that many tiny writes cannot hold more memory than that. Beyond it, `Session::write` refuses the input with `PtyError::InputBacklog` instead of growing memory; nothing is sent partially.
+- **A reply budget.** Each `Session::pump` sends at most 16 KiB of replies to queries. Only a prefix is kept: once a reply does not fit, the later ones are dropped too, so a program never receives answers out of order. Replies are best effort: a process that floods queries without reading the answers loses them.
+- **Shutdown.** When the session closes, input still queued is discarded rather than written: another process may outlive the shell on the same pseudo-terminal and must not receive keys meant for it. Writing happens in 4 KiB pieces, so a long paste stops soon after. The writer thread ends when its queue closes or a write fails; after a failure, input is refused as closed. A write that the process never reads cannot be interrupted, so in that case the thread stays blocked until the process exits.
 
 ## Alternatives considered
 
