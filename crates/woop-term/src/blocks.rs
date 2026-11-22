@@ -52,6 +52,7 @@ pub struct Block {
     exit_code: Option<i32>,
     started_at: Option<Instant>,
     duration: Option<Duration>,
+    collapsed: bool,
 }
 
 impl Block {
@@ -65,6 +66,7 @@ impl Block {
             exit_code: None,
             started_at: None,
             duration: None,
+            collapsed: false,
         }
     }
 
@@ -103,6 +105,11 @@ impl Block {
     pub fn duration(&self) -> Option<Duration> {
         self.duration
     }
+
+    /// Whether the block's output is collapsed in the view.
+    pub fn is_collapsed(&self) -> bool {
+        self.collapsed
+    }
 }
 
 /// Rows a block spans, counted from the top of the scrollback: row 0 is the
@@ -134,6 +141,33 @@ pub struct ScreenBlock {
     pub exit_code: Option<i32>,
     /// How long the command ran, once it finished.
     pub duration: Option<Duration>,
+    /// The block's output is collapsed into one summary row.
+    pub collapsed: bool,
+}
+
+/// One row of the view: a grid line, a summary standing for the hidden
+/// output of a collapsed block, or nothing (when there is not enough text
+/// to fill the view).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ViewLine {
+    Grid(i32),
+    Folded {
+        /// First grid line hidden behind the summary.
+        first: i32,
+        /// Number of grid lines hidden.
+        hidden: usize,
+    },
+    Blank,
+}
+
+impl ViewLine {
+    /// The grid line this row stands for, if any.
+    pub(crate) fn line(self) -> Option<i32> {
+        match self {
+            Self::Grid(line) | Self::Folded { first: line, .. } => Some(line),
+            Self::Blank => None,
+        }
+    }
 }
 
 /// Where an anchor is relative to the view.
@@ -304,28 +338,130 @@ impl BlockList {
             .count();
     }
 
-    /// Returns the blocks that appear in the current view, oldest first.
+    /// Collapses or expands the output of block `index`. Only finished
+    /// blocks with at least two lines of output can be collapsed: folding a
+    /// single line behind a summary saves nothing. Returns the new state, or
+    /// `None` if the block cannot be collapsed.
+    pub(crate) fn toggle_collapsed(&mut self, index: usize) -> Option<bool> {
+        let block = self.blocks.get_mut(index)?;
+        let (Some(output), Some(end)) = (block.output, block.end) else {
+            return None;
+        };
+        if end.line < output.line + 2 {
+            return None;
+        }
+        block.collapsed = !block.collapsed;
+        Some(block.collapsed)
+    }
+
+    /// Returns the rows of the view, top to bottom: the grid lines in view,
+    /// with the output of collapsed blocks replaced by one summary row each,
+    /// and more lines from above filling the space they leave.
+    pub(crate) fn view<T>(&self, term: &Term<T>) -> Vec<ViewLine> {
+        let grid = term.grid();
+        let rows = grid.screen_lines();
+        let top = -(grid.display_offset() as i32);
+        if !self.blocks.iter().any(|block| block.collapsed) {
+            return (top..top + rows as i32).map(ViewLine::Grid).collect();
+        }
+
+        // Grid lines hidden by collapsed blocks, as [first, end) ranges.
+        let history = grid.history_size() as i32;
+        let mut folds: Vec<(i32, i32)> = self
+            .blocks
+            .iter()
+            .filter(|block| block.collapsed)
+            .filter_map(|block| {
+                let rows = self.rows(term, block)?;
+                let first = rows.output? as i32 - history;
+                let end = rows.end? as i32 - history;
+                // Hiding a single line behind a summary saves nothing.
+                (end - first > 1).then_some((first, end))
+            })
+            .collect();
+        folds.sort_unstable();
+        let fold_ending_at = |line: i32| {
+            folds
+                .iter()
+                .find(|&&(first, end)| line >= first && line < end)
+        };
+
+        let topmost = grid.topmost_line().0;
+        let bottommost = grid.bottommost_line().0;
+        let mut view = Vec::with_capacity(rows);
+        // Fill upwards from the bottom of the view.
+        let mut line = top + rows as i32 - 1;
+        while view.len() < rows && line >= topmost {
+            if let Some(&(first, end)) = fold_ending_at(line) {
+                view.push(ViewLine::Folded {
+                    first,
+                    hidden: (end - first) as usize,
+                });
+                line = first - 1;
+            } else {
+                view.push(ViewLine::Grid(line));
+                line -= 1;
+            }
+        }
+        view.reverse();
+        // Near the top of the scrollback, fill downwards instead.
+        let mut line = top + rows as i32;
+        while view.len() < rows && line <= bottommost {
+            if let Some(&(first, end)) = fold_ending_at(line) {
+                view.push(ViewLine::Folded {
+                    first,
+                    hidden: (end - first) as usize,
+                });
+                line = end;
+            } else {
+                view.push(ViewLine::Grid(line));
+                line += 1;
+            }
+        }
+        view.resize(rows, ViewLine::Blank);
+        view
+    }
+
+    /// Returns the blocks that appear in `view`, oldest first.
     ///
     /// Costs one walk over the rows between the view and the screen plus
     /// the view itself, whatever the number of blocks: this runs for every
     /// frame (ADR 0013).
-    pub(crate) fn visible<T>(&self, term: &Term<T>) -> Vec<ScreenBlock> {
+    pub(crate) fn visible<T>(&self, term: &Term<T>, view: &[ViewLine]) -> Vec<ScreenBlock> {
         let grid = term.grid();
-        let view_rows = grid.screen_lines();
-        let top = -(grid.display_offset() as i32);
-        // Logical line of each row in the view.
-        let above_screen = (top..0).filter(|&row| !wraps(term, Line(row))).count();
-        let mut line = self.history_lines.saturating_sub(above_screen);
-        let mut row_lines = Vec::with_capacity(view_rows);
-        for row in top..top + view_rows as i32 {
-            row_lines.push(line);
-            if !wraps(term, Line(row)) {
-                line += 1;
+        let columns = grid.columns().max(1);
+        // Logical line of each row in the view; blank rows repeat the last.
+        let logical_of = |line: i32| -> usize {
+            if line >= 0 {
+                self.history_lines + (0..line).filter(|&row| !wraps(term, Line(row))).count()
+            } else {
+                self.history_lines
+                    .saturating_sub((line..0).filter(|&row| !wraps(term, Line(row))).count())
             }
+        };
+        let mut row_lines = Vec::with_capacity(view.len());
+        let mut previous: Option<(i32, usize)> = None;
+        for entry in view {
+            let Some(line) = entry.line() else {
+                row_lines.push(previous.map_or(0, |(_, logical)| logical + 1));
+                continue;
+            };
+            let logical = match previous {
+                Some((before, logical)) if line > before => {
+                    logical
+                        + (before..line)
+                            .filter(|&row| !wraps(term, Line(row)))
+                            .count()
+                }
+                _ => logical_of(line),
+            };
+            row_lines.push(logical);
+            previous = Some((line, logical));
         }
         let (Some(&first), Some(&last)) = (row_lines.first(), row_lines.last()) else {
             return Vec::new();
         };
+        let view_rows = view.len();
         let locate = |anchor: Anchor| {
             if anchor.line < first {
                 InView::Above
@@ -334,7 +470,7 @@ impl BlockList {
             } else {
                 // The first row of the logical line, then its wrapped rows.
                 let start = row_lines.partition_point(|&l| l < anchor.line);
-                let wrapped = anchor.offset / grid.columns().max(1);
+                let wrapped = anchor.offset / columns;
                 let rows_of_line = row_lines[start..].partition_point(|&l| l == anchor.line);
                 InView::Row(start + wrapped.min(rows_of_line.saturating_sub(1)))
             }
@@ -362,6 +498,7 @@ impl BlockList {
                 state: block.state(),
                 exit_code: block.exit_code,
                 duration: block.duration,
+                collapsed: block.collapsed,
             });
         }
         visible.reverse();
@@ -846,6 +983,74 @@ mod tests {
             term.blocks().last().map(Block::state),
             Some(BlockState::Prompt)
         );
+    }
+
+    #[test]
+    fn collapsing_folds_a_block_output() {
+        let listing: String = (1..=6).map(|n| format!("file{n}\r\n")).collect();
+        let mut term = terminal(
+            8,
+            30,
+            &format!("{}{}", run("ls", &listing, 0), run("pwd", "/home\r\n", 0)),
+        );
+        let lines = |term: &Terminal| -> Vec<String> {
+            let screen = term.screen();
+            (0..screen.rows)
+                .map(|row| {
+                    let text: String = screen.row(row).iter().map(|cell| cell.ch).collect();
+                    text.trim_end().to_owned()
+                })
+                .collect()
+        };
+        let before = lines(&term);
+
+        assert_eq!(term.toggle_collapsed(0), Some(true));
+        let folded = lines(&term);
+        assert!(folded.contains(&"$ ls".to_owned()), "{folded:?}");
+        assert!(
+            folded.contains(&"  \u{22ef} 6 lines hidden".to_owned()),
+            "{folded:?}"
+        );
+        assert!(
+            !folded.iter().any(|line| line.starts_with("file")),
+            "{folded:?}"
+        );
+        assert!(
+            folded.iter().any(|line| line.ends_with("$ pwd")),
+            "{folded:?}"
+        );
+        let blocks = term.screen().blocks;
+        assert!(blocks[0].collapsed);
+        assert_eq!(
+            blocks[1].prompt_row,
+            blocks[0].prompt_row.map(|row| row + 2)
+        );
+
+        // Clicking below the fold maps to the right line.
+        let pwd_row = folded
+            .iter()
+            .position(|line| line == "/home")
+            .expect("output row");
+        term.start_selection(
+            crate::SelectionKind::Line,
+            crate::SelectionPoint::new(pwd_row, 0),
+        );
+        assert_eq!(term.selection_text().as_deref(), Some("/home\n"));
+
+        assert_eq!(term.toggle_collapsed(0), Some(false));
+        assert_eq!(lines(&term), before);
+    }
+
+    #[test]
+    fn only_finished_blocks_with_output_collapse() {
+        let mut term = terminal(
+            6,
+            30,
+            &format!("{}{A}$ {B}sleep\r\n{C}", run("true", "", 0)),
+        );
+        assert_eq!(term.toggle_collapsed(0), None, "no output");
+        assert_eq!(term.toggle_collapsed(1), None, "still running");
+        assert_eq!(term.toggle_collapsed(7), None, "no such block");
     }
 
     #[test]

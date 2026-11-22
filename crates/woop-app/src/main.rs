@@ -54,6 +54,10 @@ pub enum Message {
     SelectionExtended(SelectionPoint),
     /// A block's bar was clicked: select that block's output.
     SelectBlockOutput(usize),
+    /// A block's bar was double-clicked: collapse or expand its output.
+    ToggleCollapse(usize),
+    /// A block's bar was Alt+clicked: copy its command.
+    CopyBlockCommand(usize),
 }
 
 struct Woop {
@@ -129,6 +133,21 @@ impl Woop {
                     && session.terminal_mut().select_block_output(index)
                 {
                     self.refresh();
+                }
+            }
+            Message::ToggleCollapse(index) => {
+                if let Some(session) = &mut self.session
+                    && session.terminal_mut().toggle_collapsed(index).is_some()
+                {
+                    self.refresh();
+                }
+            }
+            Message::CopyBlockCommand(index) => {
+                if let Some(command) = self.session.as_ref().and_then(|session| {
+                    let block = session.terminal().blocks().get(index)?;
+                    Some(block.command().to_owned()).filter(|command| !command.is_empty())
+                }) {
+                    return clipboard::write(command);
                 }
             }
             Message::Key(KeyAction::JumpBlock(direction)) => {

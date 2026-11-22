@@ -12,7 +12,7 @@ use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Osc52, TermMode};
 use alacritty_terminal::vte::ansi::{Processor, Timeout};
 
-use crate::blocks::{self, Block, BlockList, BlockRows};
+use crate::blocks::{self, Block, BlockList, BlockRows, ViewLine};
 use crate::marks::{Mark, MarkScanner};
 use crate::screen::Screen;
 use crate::selection::{SelectionKind, SelectionPoint};
@@ -454,15 +454,33 @@ impl Terminal {
 
     /// Returns a snapshot of the visible screen, for rendering.
     pub fn screen(&self) -> Screen {
-        let mut screen = Screen::from_content(
-            self.term.renderable_content(),
-            usize::from(self.size.rows),
-            usize::from(self.size.cols),
-        );
+        let view = self.view();
+        let mut screen = Screen::from_view(&self.term, &view, usize::from(self.size.cols));
         if !self.term.mode().contains(TermMode::ALT_SCREEN) {
-            screen.blocks = self.blocks.visible(&self.term);
+            screen.blocks = self.blocks.visible(&self.term, &view);
         }
         screen
+    }
+
+    /// The rows of the view: the grid lines in view, with collapsed blocks
+    /// folded. Full-screen applications are always shown as they are.
+    fn view(&self) -> Vec<ViewLine> {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            let rows = self.term.grid().screen_lines() as i32;
+            return (0..rows).map(ViewLine::Grid).collect();
+        }
+        self.blocks.view(&self.term)
+    }
+
+    /// Collapses or expands the output of block `index`, so a long output
+    /// takes one row. Only finished blocks with output can be collapsed.
+    /// Returns whether the block is now collapsed, or `None` if it cannot
+    /// be.
+    pub fn toggle_collapsed(&mut self, index: usize) -> Option<bool> {
+        let collapsed = self.blocks.toggle_collapsed(index)?;
+        // Selected text may now be hidden.
+        self.term.selection = None;
+        Some(collapsed)
     }
 
     /// Scrolls the view so that the previous (`direction < 0`) or next
@@ -597,9 +615,17 @@ impl Terminal {
     /// scroll position into account.
     fn grid_point(&self, point: SelectionPoint) -> (Point, Side) {
         let grid = self.term.grid();
-        let row = point.row.min(grid.screen_lines() - 1) as i32;
+        let view = self.view();
+        let row = point.row.min(view.len().saturating_sub(1));
         let col = point.col.min(grid.columns() - 1);
-        let line = Line(row - grid.display_offset() as i32);
+        // Rows of the view map to grid lines through the folds; blank rows
+        // below the text map to the last line.
+        let line = view[..=row]
+            .iter()
+            .rev()
+            .find_map(|entry| entry.line())
+            .unwrap_or(row as i32 - grid.display_offset() as i32);
+        let line = Line(line);
         let side = if point.right_half {
             Side::Right
         } else {
