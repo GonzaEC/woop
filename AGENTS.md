@@ -19,7 +19,8 @@ Judge every change in this order; when two conflict, the earlier one wins, and a
    - Never type anything into the shell that the user did not, except the standard replies needed to run (cursor position, device attributes). Pasted text must not carry control sequences.
    - Bound every buffer, channel and history fed by program output.
    - No `unsafe` without an ADR. Write files only to the user's own directories, with permissions that keep other users out. No network access except user-configured AI providers. Never log or store secrets.
-   - Every new dependency needs a reason and an evaluation (maintenance, vulnerabilities, licence, `unsafe`, cost); see the [`add-dependency`](.claude/skills/add-dependency/SKILL.md) skill. Prefer the standard library and well-maintained crates.2. **Tests, so nothing breaks.** Every behaviour change has tests; every bug fix has a test that fails without it. Code that parses untrusted input must never panic or hang on arbitrary bytes, and has tests that prove it.
+   - Every new dependency needs a reason and an evaluation (maintenance, vulnerabilities, licence, `unsafe`, cost); see the [`add-dependency`](.claude/skills/add-dependency/SKILL.md) skill. Prefer the standard library and well-maintained crates.
+2. **Tests, so nothing breaks.** Every behaviour change has tests; every bug fix starts with a test that fails without it (see the [`fix-bug`](.claude/skills/fix-bug/SKILL.md) skill). Code that parses untrusted input must never panic or hang on arbitrary bytes, and has tests that prove it.
 3. **Performance.** Keep the read, parse and draw paths free of per-byte or per-cell allocations, locks and blocking calls, and do no work while the shell is idle. Changes to hot paths include measurements from release builds.
 
 ## Commands
