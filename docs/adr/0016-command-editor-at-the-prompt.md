@@ -1,6 +1,6 @@
 # 0016. Edit commands in Woop's own editor while the shell waits at a prompt
 
-- **Status:** Accepted
+- **Status:** Accepted; key handling and limits refined by [0017](0017-command-editor-key-handling.md)
 - **Date:** 2026-11-22
 
 ## Context

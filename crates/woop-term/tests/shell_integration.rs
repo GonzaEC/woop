@@ -128,7 +128,7 @@ fn wait_for_editor(session: &mut Session) {
 
 /// Woop's editor panel takes rows from the grid when it appears, so the
 /// terminal is resized at the prompt; the shell must still be seen waiting
-/// for a command afterwards.
+/// for a command afterwards, and run what the editor submits.
 #[cfg(windows)]
 #[test]
 fn powershell_still_awaits_a_command_after_a_resize_at_the_prompt() {
@@ -139,18 +139,9 @@ fn powershell_still_awaits_a_command_after_a_resize_at_the_prompt() {
     );
     wait_for_editor(&mut session);
     session.resize(TerminalSize::new(22, 100)).expect("resize");
-    // Let the shell and the pseudo-terminal react to the resize.
-    let _ = session
-        .wait_until(Duration::from_secs(2), |_| false)
-        .expect("pump");
-    let id = session.terminal().awaiting_command();
-    let blocks = session.terminal().blocks().len();
-    assert!(
-        id.is_some(),
-        "not awaiting after resize ({blocks} blocks, cursor {:?}); screen was:\n{}",
-        session.terminal().cursor(),
-        session.terminal().screen_text()
-    );
+    // Matches on the command's output rather than waiting a fixed time for
+    // the shell to react to the resize.
+    submit_from_editor(&mut session);
 }
 
 #[cfg(windows)]

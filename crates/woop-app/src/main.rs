@@ -19,7 +19,7 @@ use woop_term::{
     TerminalSize, input, shell_integration,
 };
 
-use gate::Gate;
+use gate::{Consumed, Gate};
 use history::History;
 use keys::{EditorKey, KeyAction};
 use theme::Palette;
@@ -66,10 +66,14 @@ pub enum Message {
     ToggleCollapse(u64),
     /// A block's bar was Alt+clicked: copy its command.
     CopyBlockCommand(u64),
-    /// The command editor edited its text or moved its cursor.
+    /// The command editor's text or cursor changed through the mouse or an
+    /// input method.
     EditorAction(text_editor::Action),
-    /// A key of the command editor with a meaning of its own.
-    EditorKey(EditorKey),
+    /// A key was pressed in the command editor; what it means is decided
+    /// when the message is handled ([`Woop::editor_press`]).
+    EditorPress(text_editor::KeyPress),
+    /// The command editor's panel was clicked: keep the keyboard on it.
+    FocusEditor,
 }
 
 struct Woop {
@@ -83,13 +87,16 @@ struct Woop {
     /// Text of the command editor (ADR 0016).
     editor: Content,
     history: History,
-    /// The shell reported a prompt at least once, so the editor's panel is
-    /// shown from then on.
+    /// The editor turned on at least once (the shell has integration), so
+    /// its panel is shown from then on.
     integration: bool,
     /// Which prompt the editor takes the keys for.
     gate: Gate,
-    /// Lines of text the editor's panel has room for.
+    /// Lines of text the editor's panel has room for. It grows while
+    /// editing and shrinks back only at a new prompt.
     panel_lines: usize,
+    /// A message shown on the panel until the text changes.
+    notice: Option<&'static str>,
 }
 
 impl Woop {
@@ -108,6 +115,7 @@ impl Woop {
             integration: false,
             gate: Gate::default(),
             panel_lines: 1,
+            notice: None,
         }
     }
 
@@ -136,6 +144,7 @@ impl Woop {
             .observe(self.screen.awaiting_command, self.screen.command_prompt);
         if turned_on {
             self.integration = true;
+            self.notice = None;
             // The panel only shrinks here, never while a command starts.
             self.panel_lines = editor::lines_for(&self.editor);
         }
@@ -219,46 +228,44 @@ impl Woop {
             }
             Message::Pasted(Some(text)) => {
                 if self.editor_active() {
-                    // Kept as is in the editor; control characters are
-                    // removed when the command is sent.
-                    self.edit(text_editor::Action::Edit(text_editor::Edit::Paste(
-                        Arc::new(text),
-                    )));
-                } else if let Some(session) = &self.session {
-                    let bytes = input::encode_paste(&text, session.terminal().mode());
-                    self.write(&bytes);
+                    self.paste_into_editor(text);
+                } else {
+                    self.paste_into_shell(&text);
                 }
             }
             Message::Pasted(None) => {}
             Message::EditorAction(action) => {
                 if self.editor_active() {
                     self.edit(action);
-                } else if let text_editor::Action::Edit(text_editor::Edit::Insert(ch)) = action {
-                    // Typed right after Enter, before the panel was redrawn
-                    // as inactive: the key belongs to the shell now, in
-                    // order with the ones after it.
-                    let mut buffer = [0; 4];
-                    self.write(ch.encode_utf8(&mut buffer).as_bytes());
+                } else if let text_editor::Action::Edit(text_editor::Edit::Paste(text)) = action {
+                    // Text from an input method, committed just after the
+                    // editor turned off: it belongs to the shell now.
+                    self.paste_into_shell(&text);
                 }
             }
-            Message::EditorKey(key) => {
+            Message::EditorPress(press) => return self.editor_press(press),
+            Message::FocusEditor => {
                 if self.editor_active() {
-                    return self.editor_key(key);
+                    return editor::focus();
                 }
             }
         }
         Task::none()
     }
 
-    fn view(&self) -> Element<'_, Message> {
+    /// What key presses mean right now.
+    fn key_context(&self) -> keys::KeyContext {
         let terminal = self.session.as_ref().map(Session::terminal);
-        let active = self.editor_active();
-        let keys = keys::KeyContext {
+        keys::KeyContext {
             mode: terminal.map(Terminal::mode).unwrap_or_default(),
             has_selection: terminal.is_some_and(Terminal::has_selection),
             shortcuts: keys::Shortcuts::platform(),
-            editor_active: active,
-        };
+            editor_active: self.editor_active(),
+        }
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        let keys = self.key_context();
         let grid = canvas(TerminalView {
             screen: &self.screen,
             palette: &self.palette,
@@ -277,6 +284,7 @@ impl Woop {
             status: self.gate.status(self.screen.command_prompt),
             lines: self.panel_lines,
             keys,
+            notice: self.notice,
             palette: &self.palette,
             metrics: self.metrics,
         });
@@ -305,19 +313,143 @@ impl Woop {
     /// Applies an editing action to the editor's text.
     fn edit(&mut self, action: text_editor::Action) {
         if action.is_edit() {
-            self.history.stop_walking();
-            self.gate.edited();
+            self.text_changed();
         }
         self.editor.perform(action);
-        self.panel_lines = editor::lines_for(&self.editor);
+        self.grow_panel();
     }
 
-    /// Replaces the editor's text, with the cursor at its end.
+    /// Replaces the editor's text, with the cursor at its end. A pending
+    /// confirmation no longer applies; a walk through the history goes on.
     fn set_editor_text(&mut self, text: &str) {
+        self.gate.edited();
+        self.notice = None;
         self.editor = Content::with_text(text);
         self.editor
             .perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
-        self.panel_lines = editor::lines_for(&self.editor);
+        self.grow_panel();
+    }
+
+    /// The editor's text changed: a walk through the history, a pending
+    /// confirmation and a notice no longer apply.
+    fn text_changed(&mut self) {
+        self.history.stop_walking();
+        self.gate.edited();
+        self.notice = None;
+    }
+
+    /// The panel grows with the text; it shrinks only at a new prompt, so
+    /// the grid is not resized while editing or when a command starts.
+    fn grow_panel(&mut self) {
+        self.panel_lines = self.panel_lines.max(editor::lines_for(&self.editor));
+    }
+
+    /// Pastes text into the shell, as on the grid.
+    fn paste_into_shell(&mut self, text: &str) {
+        if let Some(session) = &self.session {
+            let bytes = input::encode_paste(text, session.terminal().mode());
+            self.scroll_to_bottom();
+            self.write(&bytes);
+        }
+    }
+
+    /// Pastes text into the editor, within the editor's limits: laying out
+    /// very long text makes every key slow. Larger text goes to the shell's
+    /// own line as a paste when the editor is empty, and is refused
+    /// otherwise. Control characters are kept here and removed when the
+    /// command is sent.
+    fn paste_into_editor(&mut self, text: String) {
+        if editor::fits(&self.editor, &text) {
+            self.edit(text_editor::Action::Edit(text_editor::Edit::Paste(
+                Arc::new(text),
+            )));
+        } else if self.editor.is_empty() {
+            self.paste_into_shell(&text);
+            self.gate.consume(Consumed::HandedOff);
+        } else {
+            self.notice =
+                Some("Too long to edit here: clear the editor to paste it into the shell");
+        }
+    }
+
+    /// Handles a key pressed in the editor, with the state at this moment.
+    fn editor_press(&mut self, mut press: text_editor::KeyPress) -> Task<Message> {
+        let keys = self.key_context();
+        if !self.editor_active() {
+            // Pressed just after the editor turned off (after Enter, before
+            // the window was redrawn): the key goes to the shell as on the
+            // grid, in order with the ones after it.
+            let grid = keys::KeyContext {
+                editor_active: false,
+                ..keys
+            };
+            return match keys::key_press(&press.key, press.modifiers, press.text.as_deref(), grid) {
+                Some(action) => self.handle(Message::Key(action)),
+                None => Task::none(),
+            };
+        }
+        // Keys reach the editor even when a click elsewhere took its focus;
+        // the focus is given back so its cursor shows again.
+        let refocus = !matches!(press.status, text_editor::Status::Focused { .. });
+        press.status = text_editor::Status::Focused { is_hovered: false };
+
+        let context = editor::context(&self.editor, keys);
+        let key = keys::editor_key(&press.key, press.modifiers, press.text.as_deref(), context);
+        let task = match key {
+            EditorKey::Edit => match text_editor::Binding::from_key_press(press) {
+                Some(binding) => self.apply_binding(binding),
+                None => Task::none(),
+            },
+            key => self.editor_key(key),
+        };
+        if refocus {
+            Task::batch([task, editor::focus()])
+        } else {
+            task
+        }
+    }
+
+    /// Performs one of the editor's own key bindings.
+    fn apply_binding(&mut self, binding: text_editor::Binding<Message>) -> Task<Message> {
+        use text_editor::{Action, Binding, Edit};
+        match binding {
+            Binding::Copy => return self.copy_editor_selection(),
+            Binding::Cut => {
+                let task = self.copy_editor_selection();
+                if self.editor.selection().is_some() {
+                    self.edit(Action::Edit(Edit::Delete));
+                }
+                return task;
+            }
+            Binding::Paste => return clipboard::read().map(Message::Pasted),
+            Binding::Move(motion) => self.edit(Action::Move(motion)),
+            Binding::Select(motion) => self.edit(Action::Select(motion)),
+            Binding::SelectWord => self.edit(Action::SelectWord),
+            Binding::SelectLine => self.edit(Action::SelectLine),
+            Binding::SelectAll => self.edit(Action::SelectAll),
+            Binding::Insert(ch) => self.edit(Action::Edit(Edit::Insert(ch))),
+            Binding::Enter => self.edit(Action::Edit(Edit::Enter)),
+            Binding::Backspace => self.edit(Action::Edit(Edit::Backspace)),
+            Binding::Delete => self.edit(Action::Edit(Edit::Delete)),
+            Binding::Sequence(bindings) => {
+                return Task::batch(
+                    bindings
+                        .into_iter()
+                        .map(|binding| self.apply_binding(binding))
+                        .collect::<Vec<_>>(),
+                );
+            }
+            // The editor keeps the focus while it is active; Woop produces
+            // no custom bindings.
+            Binding::Unfocus | Binding::Custom(_) => {}
+        }
+        Task::none()
+    }
+
+    fn copy_editor_selection(&self) -> Task<Message> {
+        self.editor
+            .selection()
+            .map_or_else(Task::none, clipboard::write)
     }
 
     fn editor_key(&mut self, key: EditorKey) -> Task<Message> {
@@ -339,8 +471,9 @@ impl Woop {
                 // editor, so nothing typed is lost.
                 if self.write(&input::encode_command(&text, mode)) {
                     self.history.push(&text);
-                    self.gate.consume();
+                    self.gate.consume(Consumed::Submitted);
                     self.editor = Content::new();
+                    self.notice = None;
                 }
             }
             EditorKey::HandOff(key) => {
@@ -352,8 +485,9 @@ impl Woop {
                     self.scroll_to_bottom();
                     if self.write(&bytes) {
                         self.history.stop_walking();
-                        self.gate.consume();
+                        self.gate.consume(Consumed::HandedOff);
                         self.editor = Content::new();
+                        self.notice = None;
                     }
                 }
             }
@@ -376,12 +510,16 @@ impl Woop {
                 self.write(&bytes);
             }
             EditorKey::CopyGrid => return self.copy_grid_selection(),
-            // Handled by the editor widget itself.
-            EditorKey::Edit
-            | EditorKey::Ignore
-            | EditorKey::Newline
-            | EditorKey::Copy
-            | EditorKey::Paste => {}
+            EditorKey::Copy => return self.copy_editor_selection(),
+            EditorKey::Paste => return clipboard::read().map(Message::Pasted),
+            EditorKey::Newline => {
+                self.edit(text_editor::Action::Edit(text_editor::Edit::Enter));
+            }
+            EditorKey::Type(ch) => {
+                self.edit(text_editor::Action::Edit(text_editor::Edit::Insert(ch)));
+            }
+            // Edit is resolved by the caller; Ignore does nothing.
+            EditorKey::Edit | EditorKey::Ignore => {}
         }
         Task::none()
     }

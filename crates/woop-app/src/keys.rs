@@ -128,7 +128,12 @@ pub enum EditorKey {
     Paste,
     /// Clear the editor.
     Clear,
-    /// Send these bytes to the shell, whose line is empty.
+    /// Insert this character (typed with AltGr, which arrives as Ctrl+Alt
+    /// and must not trigger the editor's Ctrl shortcuts).
+    Type(char),
+    /// Send these bytes to the shell. Only keys that leave the shell's line
+    /// empty (interrupt, end of input, clear screen), so that the editor's
+    /// text is all the shell runs.
     Shell(Vec<u8>),
     /// Type the editor's text into the shell's line, then these bytes, and
     /// leave the rest of the prompt to the shell's own line editor.
@@ -151,12 +156,22 @@ pub struct EditorContext {
     pub on_last_line: bool,
 }
 
-/// Interprets a key press in the command editor.
+/// Interprets a key press in the command editor. `text` is what the key
+/// typed, if anything.
 pub fn editor_key(
     key: &WindowKey,
     modifiers: WindowModifiers,
+    text: Option<&str>,
     context: EditorContext,
 ) -> EditorKey {
+    // AltGr (reported as Ctrl+Alt on Windows) types characters such as `@`
+    // or `ą`; they must be typed, not read as Ctrl shortcuts.
+    if modifiers.control()
+        && modifiers.alt()
+        && let Some(ch) = text.and_then(|text| text.chars().find(|ch| !ch.is_control()))
+    {
+        return EditorKey::Type(ch);
+    }
     let keys = KeyContext {
         has_selection: context.has_selection || context.keys.has_selection,
         editor_active: false,
@@ -203,6 +218,9 @@ pub fn editor_key(
             input::encode_key(Key::Tab, terminal_modifiers, context.keys.mode)
                 .map_or(EditorKey::Ignore, EditorKey::HandOff)
         }
+        // Control codes that mean Tab and Enter to the shell.
+        (_, Some('i')) if ctrl_only => EditorKey::HandOff(b"\t".to_vec()),
+        (_, Some('j' | 'm')) if ctrl_only => EditorKey::Submit,
         (_, Some('r')) if ctrl_only => EditorKey::HandOff(vec![0x12]),
         // The shell does not see keys while the editor is active, so Ctrl+C
         // copies on every platform when something is selected. Otherwise
@@ -216,21 +234,36 @@ pub fn editor_key(
         (_, Some('a' | 'x' | 'v')) if ctrl_only && context.keys.shortcuts != Shortcuts::MacOs => {
             EditorKey::Edit
         }
-        // Ending the shell would lose the text being written.
-        (_, Some('d')) if ctrl_only && !context.is_empty => EditorKey::Ignore,
-        // Other control keys act as at an empty prompt (Ctrl+L clears the
-        // screen, Ctrl+D ends the shell).
-        (WindowKey::Character(_), Some(ch)) if ctrl_only => {
-            input::encode_key(Key::Char(ch), terminal_modifiers, context.keys.mode)
-                .map_or(EditorKey::Ignore, EditorKey::Shell)
-        }
+        // Keys that leave the shell's line empty reach it directly: Ctrl+L
+        // clears the screen, Ctrl+D ends the shell (only from an empty
+        // editor, so no text is lost).
+        (_, Some('l')) if ctrl_only => EditorKey::Shell(vec![0x0c]),
+        (_, Some('d')) if ctrl_only && context.is_empty => EditorKey::Shell(vec![0x04]),
+        (_, Some('d')) if ctrl_only => EditorKey::Ignore,
         (WindowKey::Named(Named::Escape), _) => EditorKey::Ignore,
+        // Other control and function keys may put text into the shell's
+        // line (recalling history, yanking), which would then run together
+        // with the editor's text. From an empty editor they hand the prompt
+        // to the shell's line editor; otherwise they are ignored.
+        (WindowKey::Character(_), Some(ch)) if ctrl_only => hand_off_if_empty(
+            input::encode_key(Key::Char(ch), terminal_modifiers, context.keys.mode),
+            context,
+        ),
         (WindowKey::Named(named), _) if matches!(named_key(*named), Some(Key::F(_))) => {
-            named_key(*named)
-                .and_then(|key| input::encode_key(key, terminal_modifiers, context.keys.mode))
-                .map_or(EditorKey::Ignore, EditorKey::Shell)
+            hand_off_if_empty(
+                named_key(*named)
+                    .and_then(|key| input::encode_key(key, terminal_modifiers, context.keys.mode)),
+                context,
+            )
         }
         _ => EditorKey::Edit,
+    }
+}
+
+fn hand_off_if_empty(bytes: Option<Vec<u8>>, context: EditorContext) -> EditorKey {
+    match bytes {
+        Some(bytes) if context.is_empty => EditorKey::HandOff(bytes),
+        _ => EditorKey::Ignore,
     }
 }
 
@@ -548,6 +581,15 @@ mod tests {
 
     impl Editor {
         fn key(self, key: WindowKey, modifiers: WindowModifiers) -> EditorKey {
+            self.key_with_text(key, modifiers, None)
+        }
+
+        fn key_with_text(
+            self,
+            key: WindowKey,
+            modifiers: WindowModifiers,
+            text: Option<&str>,
+        ) -> EditorKey {
             let context = EditorContext {
                 keys: KeyContext {
                     mode: TerminalMode {
@@ -563,7 +605,7 @@ mod tests {
                 on_first_line: self.on_first_line,
                 on_last_line: self.on_last_line,
             };
-            editor_key(&key, modifiers, context)
+            editor_key(&key, modifiers, text, context)
         }
     }
 
@@ -683,10 +725,15 @@ mod tests {
             mac.key(character("a"), WindowModifiers::LOGO),
             EditorKey::Edit
         );
-        // Ctrl+A is not an editing shortcut on macOS.
+        // Ctrl+A is not an editing shortcut on macOS: it hands the prompt
+        // to the shell's line editor from an empty editor.
         assert_eq!(
-            mac.key(character("a"), WindowModifiers::CTRL),
-            EditorKey::Shell(vec![0x01])
+            Editor {
+                is_empty: true,
+                ..mac
+            }
+            .key(character("a"), WindowModifiers::CTRL),
+            EditorKey::HandOff(vec![0x01])
         );
         // Nothing selected anywhere: the copy shortcut does nothing.
         assert_eq!(
@@ -709,11 +756,6 @@ mod tests {
             EditorKey::Edit
         );
         assert_eq!(EDITOR.key(named(Named::ArrowLeft), ctrl), EditorKey::Edit);
-        // AltGr produces characters.
-        assert_eq!(
-            EDITOR.key(character("q"), WindowModifiers::CTRL | WindowModifiers::ALT),
-            EditorKey::Edit
-        );
         assert_eq!(
             EDITOR.key(named(Named::Escape), WindowModifiers::empty()),
             EditorKey::Ignore
@@ -750,11 +792,69 @@ mod tests {
             empty.key(character("d"), ctrl),
             EditorKey::Shell(vec![0x04])
         );
-        assert_eq!(
-            EDITOR.key(named(Named::F5), WindowModifiers::empty()),
-            EditorKey::Shell(b"\x1b[15~".to_vec())
-        );
         // Unused: does not become a control code.
         assert_eq!(EDITOR.key(character("1"), ctrl), EditorKey::Ignore);
+    }
+
+    #[test]
+    fn keys_that_could_fill_the_shells_line_never_reach_it_behind_text() {
+        // Ctrl+P recalls history and Ctrl+Y yanks into the shell's hidden
+        // line, which would then run together with the editor's text.
+        let ctrl = WindowModifiers::CTRL;
+        for letter in ["p", "n", "y", "b", "f", "u", "w"] {
+            assert_eq!(
+                EDITOR.key(character(letter), ctrl),
+                EditorKey::Ignore,
+                "Ctrl+{letter}"
+            );
+        }
+        assert_eq!(
+            EDITOR.key(named(Named::F8), WindowModifiers::empty()),
+            EditorKey::Ignore
+        );
+        // From an empty editor they hand the prompt to the shell.
+        let empty = Editor {
+            is_empty: true,
+            ..EDITOR
+        };
+        assert_eq!(
+            empty.key(character("p"), ctrl),
+            EditorKey::HandOff(vec![0x10])
+        );
+        assert_eq!(
+            empty.key(named(Named::F5), WindowModifiers::empty()),
+            EditorKey::HandOff(b"\x1b[15~".to_vec())
+        );
+        let mac = Editor {
+            shortcuts: Shortcuts::MacOs,
+            ..EDITOR
+        };
+        assert_eq!(mac.key(character("a"), ctrl), EditorKey::Ignore);
+    }
+
+    #[test]
+    fn control_codes_for_tab_and_enter_act_as_those_keys() {
+        let ctrl = WindowModifiers::CTRL;
+        assert_eq!(
+            EDITOR.key(character("i"), ctrl),
+            EditorKey::HandOff(b"\t".to_vec())
+        );
+        assert_eq!(EDITOR.key(character("m"), ctrl), EditorKey::Submit);
+        assert_eq!(EDITOR.key(character("j"), ctrl), EditorKey::Submit);
+    }
+
+    #[test]
+    fn alt_gr_types_characters_instead_of_running_shortcuts() {
+        let alt_gr = WindowModifiers::CTRL | WindowModifiers::ALT;
+        // On a Polish layout AltGr+A, C and X type ą, ć and ź.
+        for (key, typed) in [("a", 'ą'), ("c", 'ć'), ("x", 'ź'), ("q", '@')] {
+            let text = typed.to_string();
+            assert_eq!(
+                EDITOR.key_with_text(character(key), alt_gr, Some(&text)),
+                EditorKey::Type(typed)
+            );
+        }
+        // Without text, Ctrl+Alt is not a character.
+        assert_ne!(EDITOR.key(character("a"), alt_gr), EditorKey::Type('a'));
     }
 }

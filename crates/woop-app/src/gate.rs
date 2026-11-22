@@ -1,4 +1,4 @@
-//! When the command editor takes the keys (ADR 0016).
+//! When the command editor takes the keys (ADR 0016, 0017).
 //!
 //! The editor turns on when the shell waits for a command with an empty
 //! line, and then stays on for that prompt even if output moves the cursor:
@@ -15,8 +15,9 @@ pub enum Status {
     /// As `Active`, after Enter was refused once because the shell's line
     /// might not be empty any more; Enter again sends anyway.
     Confirm,
-    /// This prompt was handed off to the shell's own line editor.
-    HandedOff,
+    /// The prompt is shown but belongs to the shell's own line editor: it
+    /// was handed off, or the shell's line already held text.
+    ShellLine,
     /// No prompt: a command is running (or the shell has not reported one).
     Running,
 }
@@ -30,14 +31,23 @@ pub enum Submit {
     Confirm,
 }
 
+/// How the editor gave up its prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Consumed {
+    /// The command was sent and is about to run.
+    Submitted,
+    /// The text was typed into the shell's own line.
+    HandedOff,
+}
+
 /// Tracks which prompt the editor belongs to.
 #[derive(Debug, Default)]
 pub struct Gate {
     /// Prompt the editor is on for.
     armed: Option<u64>,
-    /// Prompt whose command was submitted or handed off; the editor does
-    /// not turn on again for it.
-    consumed: Option<u64>,
+    /// Prompt whose command was submitted or handed off, and how; the
+    /// editor does not turn on again for it.
+    consumed: Option<(u64, Consumed)>,
     /// Enter was refused once for the armed prompt.
     confirm: bool,
 }
@@ -51,15 +61,16 @@ impl Gate {
             self.armed = None;
             self.confirm = false;
         }
-        if self.consumed.is_some() && self.consumed != prompt {
+        if self.consumed.is_some_and(|(id, _)| Some(id) != prompt) {
             self.consumed = None;
         }
         if self.armed.is_none()
             && awaiting.is_some()
             && awaiting == prompt
-            && awaiting != self.consumed
+            && awaiting != self.consumed.map(|(id, _)| id)
         {
             self.armed = awaiting;
+            self.confirm = false;
             return true;
         }
         false
@@ -72,19 +83,23 @@ impl Gate {
 
     /// What the panel shows, given the prompt on screen.
     pub fn status(&self, prompt: Option<u64>) -> Status {
-        match (self.armed, self.confirm) {
-            (Some(_), false) => Status::Active,
-            (Some(_), true) => Status::Confirm,
-            (None, _) if prompt.is_some() && prompt == self.consumed => Status::HandedOff,
-            (None, _) => Status::Running,
+        match (self.armed, self.confirm, self.consumed) {
+            (Some(_), false, _) => Status::Active,
+            (Some(_), true, _) => Status::Confirm,
+            (None, _, _) if prompt.is_none() => Status::Running,
+            (None, _, Some((id, Consumed::Submitted))) if Some(id) == prompt => Status::Running,
+            (None, _, _) => Status::ShellLine,
         }
     }
 
     /// Decides what Enter does. Sending is safe while the shell's line is
     /// still empty (`awaiting` is the armed prompt); otherwise the user
-    /// confirms with a second Enter.
+    /// confirms with a second Enter. Nothing is sent while the editor is off.
     pub fn submit(&mut self, awaiting: Option<u64>) -> Submit {
-        if self.armed.is_some() && (awaiting == self.armed || self.confirm) {
+        if self.armed.is_none() {
+            return Submit::Confirm;
+        }
+        if awaiting == self.armed || self.confirm {
             Submit::Send
         } else {
             self.confirm = true;
@@ -99,8 +114,8 @@ impl Gate {
 
     /// The command was sent or handed off: the editor turns off until the
     /// next prompt.
-    pub fn consume(&mut self) {
-        self.consumed = self.armed.take();
+    pub fn consume(&mut self, how: Consumed) {
+        self.consumed = self.armed.take().map(|id| (id, how));
         self.confirm = false;
     }
 }
@@ -173,15 +188,48 @@ mod tests {
         let mut gate = Gate::default();
         assert_eq!(gate.submit(Some(1)), Submit::Confirm);
         assert_eq!(gate.submit(Some(1)), Submit::Confirm);
+        // A refusal while off does not carry over to the next prompt: its
+        // first Enter is still checked.
+        gate.observe(Some(1), Some(1));
+        gate.observe(None, Some(1));
+        assert_eq!(gate.status(Some(1)), Status::Active);
+        assert_eq!(gate.submit(None), Submit::Confirm);
+    }
+
+    #[test]
+    fn a_submitted_prompt_shows_the_command_starting() {
+        let mut gate = Gate::default();
+        gate.observe(Some(1), Some(1));
+        gate.consume(Consumed::Submitted);
+        assert!(!gate.is_active());
+        assert_eq!(gate.status(Some(1)), Status::Running);
+    }
+
+    #[test]
+    fn text_typed_ahead_leaves_the_prompt_to_the_shell() {
+        let mut gate = Gate::default();
+        assert!(!gate.observe(None, Some(1)));
+        assert_eq!(gate.status(Some(1)), Status::ShellLine);
+    }
+
+    #[test]
+    fn the_alternate_screen_turns_the_editor_off_until_the_next_prompt() {
+        let mut gate = Gate::default();
+        gate.observe(Some(1), Some(1));
+        // A full-screen program hides the prompt.
+        gate.observe(None, None);
+        assert!(!gate.is_active());
+        // Back at the same, still empty prompt: the editor turns on again.
+        assert!(gate.observe(Some(1), Some(1)));
     }
 
     #[test]
     fn a_consumed_prompt_is_left_to_the_shell() {
         let mut gate = Gate::default();
         gate.observe(Some(1), Some(1));
-        gate.consume();
+        gate.consume(Consumed::HandedOff);
         assert!(!gate.is_active());
-        assert_eq!(gate.status(Some(1)), Status::HandedOff);
+        assert_eq!(gate.status(Some(1)), Status::ShellLine);
         // The shell's line is empty again (the user cleared it there): the
         // prompt still belongs to the shell.
         assert!(!gate.observe(Some(1), Some(1)));

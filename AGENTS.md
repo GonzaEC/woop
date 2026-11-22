@@ -70,7 +70,7 @@ Automated tests cannot judge how the window looks or feels (rendering, keyboard,
 
 ## Platform conventions
 
-- **Keyboard shortcuts** follow each platform (`keys::Shortcuts` in `woop-app`). Windows: Ctrl+C copies while text is selected and interrupts otherwise, Ctrl+V pastes. Linux: Ctrl+Shift+C and Ctrl+Shift+V, leaving Ctrl+C and Ctrl+V to the shell. macOS: Cmd+C and Cmd+V. A new shortcut must not take a key the shell needs on that platform. Key handling decides from the `Shortcuts` value it is given, never from `cfg!`, so tests can check every platform's conventions on any platform.
+- **Keyboard shortcuts** follow each platform (`keys::Shortcuts` in `woop-app`). Windows: Ctrl+C copies while text is selected and interrupts otherwise, Ctrl+V pastes. Linux: Ctrl+Shift+C and Ctrl+Shift+V, leaving Ctrl+C and Ctrl+V to the shell. macOS: Cmd+C and Cmd+V. A new shortcut must not take a key the shell needs on that platform. While Woop's command editor is active the shell receives no keys, so the editor follows text-field conventions instead (Ctrl+A, Ctrl+X, Ctrl+V and Ctrl+C on a selection; Cmd on macOS), and only sends the shell keys that keep its line empty ([ADR 0017](docs/adr/0017-command-editor-key-handling.md)). Key handling decides from the `Shortcuts` value it is given, never from `cfg!`, so tests can check every platform's conventions on any platform.
 - **Shell integration** scripts live in `crates/woop-term/shell/` and are embedded in the binary ([ADR 0011](docs/adr/0011-shell-integration-and-command-blocks.md)). They:
   - wrap the user's prompt and configuration, never replace them, and keep the last exit status visible to the user's prompt;
   - keep LF line endings (`.gitattributes` enforces it);
