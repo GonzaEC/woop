@@ -43,9 +43,17 @@ The body follows `.github/PULL_REQUEST_TEMPLATE.md`:
 
 What changed and why. Link issues ("Closes #12").
 
+## Security
+
+What untrusted input (program output, paste, files) reaches the change, and how it is bounded; or "No impact" with the reason.
+
 ## Testing
 
-What was run and on which platforms; what only CI covers.
+What was run and on which platforms; what only CI covers; the regression test for a bug fix.
+
+## Performance
+
+Release-build measurements for hot-path changes, or "Not on a hot path".
 ```
 
 No attribution footer in the body either.

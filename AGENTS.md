@@ -4,11 +4,24 @@ Instructions for AI coding agents (and a quick reference for humans) working on 
 
 ## Project
 
-Woop is a fast, lightweight, GPU-accelerated terminal written in Rust, targeting Windows, macOS and Linux. Core principles: performance, low memory use, no accounts, no telemetry ([ADR 0008](docs/adr/0008-no-accounts-no-telemetry.md)).
+Woop is a fast, lightweight, GPU-accelerated terminal written in Rust, targeting Windows, macOS and Linux. Core principles: security, reliability, performance, low memory use, no accounts, no telemetry ([ADR 0008](docs/adr/0008-no-accounts-no-telemetry.md)).
 
 - Architecture overview: [docs/architecture.md](docs/architecture.md)
 - Decisions and their reasons: [docs/adr/](docs/adr/README.md)
 - Milestones: [docs/roadmap.md](docs/roadmap.md)
+
+## Priorities
+
+Judge every change in this order; when two conflict, the earlier one wins, and all three come before new features ([ADR 0012](docs/adr/0012-security-tests-performance-priorities.md)).
+
+1. **Security is paramount.** A terminal runs the user's shell and displays output from untrusted sources (files, remote machines).
+   - Treat program output as untrusted input. Anything that lets output act beyond drawing text (clipboard writes, replies containing data, links, files) is off by default or needs an explicit user action, and is bounded in size.
+   - Never type anything into the shell that the user did not, except the standard replies needed to run (cursor position, device attributes). Pasted text must not carry control sequences.
+   - Bound every buffer, channel and history fed by program output.
+   - No `unsafe` without an ADR. Write files only to the user's own directories, with permissions that keep other users out. No network access except user-configured AI providers. Never log or store secrets.
+   - Every new dependency needs a reason; prefer the standard library and well-maintained crates.
+2. **Tests, so nothing breaks.** Every behaviour change has tests; every bug fix has a test that fails without it. Code that parses untrusted input must never panic or hang on arbitrary bytes, and has tests that prove it.
+3. **Performance.** Keep the read, parse and draw paths free of per-byte or per-cell allocations, locks and blocking calls, and do no work while the shell is idle. Changes to hot paths include measurements from release builds.
 
 ## Commands
 

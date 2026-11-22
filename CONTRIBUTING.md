@@ -27,13 +27,19 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
+## Priorities
+
+Woop's priorities, in order: **security, then tests, then performance**, all ahead of new features. When they conflict, the earlier one wins. [ADR 0012](docs/adr/0012-security-tests-performance-priorities.md) explains them in detail.
+
+- **Security first.** Output from programs is untrusted: features that let it act (clipboard, links, replies with data) are off by default or need a user action. Keep every buffer bounded, add no `unsafe` code, and justify every new dependency. Report vulnerabilities privately, as described in [SECURITY.md](SECURITY.md).
+- **Tests so nothing breaks.** New behaviour comes with tests, and bug fixes with a test that fails without the fix. Parsers of untrusted input must never panic on arbitrary bytes.
+- **Performance.** Avoid allocations and blocking work on the read, parse and render paths. Include release-build measurements when a change affects throughput, latency or memory.
+
 ## Guidelines
 
 - **Keep changes focused.** One logical change per pull request. Open an issue first for large features or design changes.
 - **Respect crate boundaries.** Terminal logic belongs in `woop-term`, process handling in `woop-pty`. The UI crate should not reach into internals. See [docs/architecture.md](docs/architecture.md).
-- **Performance matters.** Avoid allocations and blocking work on the render path. Include measurements when a change affects throughput or latency.
 - **Cross-platform.** Changes must build and behave correctly on Windows, macOS and Linux. Platform-specific code goes behind `cfg` attributes in clearly named modules.
-- **Tests.** Add tests for new behaviour, especially parsing and state transitions in `woop-term`.
 - **Documentation.** Public items carry doc comments. Update the docs when behaviour changes.
 
 ## Architecture decisions

@@ -22,7 +22,11 @@ cargo test --workspace
 
 ## 2. Review the diff against the project rules
 
-Inspect `git diff main...HEAD` plus uncommitted changes and check:
+Inspect `git diff main...HEAD` plus uncommitted changes and check, in the order of Woop's priorities ([ADR 0012](../../../docs/adr/0012-security-tests-performance-priorities.md)):
+
+- **Security (first, always):** program output cannot act beyond drawing text without an opt-in or user action; nothing is typed into the shell that the user did not type, except standard replies; every buffer or channel fed by output is bounded; parsing of untrusted input cannot panic or loop; files are written only to the user's directories with private permissions; no new `unsafe`; new dependencies are justified; no secrets in logs or files.
+- **Regression tests:** every bug fix has a test that fails without the fix; parsers of untrusted input are tested with arbitrary bytes.
+- **Performance:** hot paths (read, parse, draw) gain no per-byte or per-cell allocations, locks or blocking calls; hot-path changes report release-build measurements.
 
 - **Crate boundaries** follow the table in `AGENTS.md`; no library types leak into public APIs of `woop-pty` or `woop-term`.
 - **Cross-platform:** platform-specific code is behind `cfg` and both branches compile in principle; paths and line endings are not hard-coded for one OS. Tests that parse paths work on every OS (`Path` does not split on `\` outside Windows). Code under `cfg` for another OS is not compiled locally: read it carefully and leave it to CI.

@@ -14,6 +14,8 @@
 
 ## Why Woop
 
+- **Secure by design.** Security comes first. Output from programs and remote machines is treated as untrusted input, and features that would let it act on your behalf are opt-in. Woop's own code contains no `unsafe`. See the [priorities](docs/adr/0012-security-tests-performance-priorities.md) and the [security policy](SECURITY.md).
+- **Reliable.** Every change is tested on Windows, macOS and Linux, including real shells, before it is merged.
 - **Fast.** Native Rust with GPU rendering. Starts instantly and stays responsive with large outputs.
 - **Lightweight.** A small binary with a low memory footprint. No bundled browser engine.
 - **Private by default.** No account, no sign-in, no telemetry. Your terminal works offline.
