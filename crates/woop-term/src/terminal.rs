@@ -454,11 +454,70 @@ impl Terminal {
 
     /// Returns a snapshot of the visible screen, for rendering.
     pub fn screen(&self) -> Screen {
-        Screen::from_content(
+        let mut screen = Screen::from_content(
             self.term.renderable_content(),
             usize::from(self.size.rows),
             usize::from(self.size.cols),
-        )
+        );
+        if !self.term.mode().contains(TermMode::ALT_SCREEN) {
+            screen.blocks = self.blocks.visible(&self.term);
+        }
+        screen
+    }
+
+    /// Scrolls the view so that the previous (`direction < 0`) or next
+    /// block's prompt is at the top. Returns whether there was one.
+    pub fn jump_to_block(&mut self, direction: i32) -> bool {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) || direction == 0 {
+            return false;
+        }
+        let grid = self.term.grid();
+        let history = grid.history_size();
+        let offset = grid.display_offset();
+        let view_top = history - offset;
+        let prompts = self.blocks.prompt_rows(&self.term);
+        let target = if direction < 0 {
+            prompts.iter().rev().find(|&&row| row < view_top)
+        } else {
+            prompts.iter().find(|&&row| row > view_top)
+        };
+        let Some(&row) = target else {
+            return false;
+        };
+        let new_offset = history.saturating_sub(row);
+        let delta = i32::try_from(new_offset as i64 - offset as i64).unwrap_or(0);
+        self.term.scroll_display(Scroll::Delta(delta));
+        true
+    }
+
+    /// Selects the output of block `index`, so it can be copied. Returns
+    /// whether the block has any output to select.
+    pub fn select_block_output(&mut self, index: usize) -> bool {
+        let Some(block) = self.blocks.as_slice().get(index) else {
+            return false;
+        };
+        let Some(rows) = self.blocks.rows(&self.term, block) else {
+            return false;
+        };
+        let Some(output) = rows.output else {
+            return false;
+        };
+        let grid = self.term.grid();
+        let history = grid.history_size();
+        let last_row = history + grid.screen_lines() - 1;
+        let end = rows.end.unwrap_or(last_row + 1);
+        if end <= output {
+            return false;
+        }
+        let line = |row: usize| Line(row as i32 - history as i32);
+        let mut selection = Selection::new(
+            SelectionType::Lines,
+            Point::new(line(output), Column(0)),
+            Side::Left,
+        );
+        selection.update(Point::new(line(end - 1), Column(0)), Side::Right);
+        self.term.selection = Some(selection);
+        true
     }
 
     /// Returns the input modes requested by the running application.

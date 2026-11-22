@@ -52,6 +52,8 @@ pub enum Message {
     SelectionStarted(SelectionPoint, SelectionKind),
     /// The mouse moved while selecting.
     SelectionExtended(SelectionPoint),
+    /// A block's bar was clicked: select that block's output.
+    SelectBlockOutput(usize),
 }
 
 struct Woop {
@@ -119,6 +121,20 @@ impl Woop {
             Message::SelectionExtended(point) => {
                 if let Some(session) = &mut self.session {
                     session.terminal_mut().extend_selection(point);
+                    self.refresh();
+                }
+            }
+            Message::SelectBlockOutput(index) => {
+                if let Some(session) = &mut self.session
+                    && session.terminal_mut().select_block_output(index)
+                {
+                    self.refresh();
+                }
+            }
+            Message::Key(KeyAction::JumpBlock(direction)) => {
+                if let Some(session) = &mut self.session
+                    && session.terminal_mut().jump_to_block(direction)
+                {
                     self.refresh();
                 }
             }

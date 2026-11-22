@@ -18,7 +18,7 @@ mod session;
 pub mod shell_integration;
 mod terminal;
 
-pub use blocks::{Block, BlockRows, BlockState};
+pub use blocks::{Block, BlockRows, BlockState, ScreenBlock};
 pub use screen::{Cell, CellStyle, Color, Cursor, CursorShape, Screen};
 pub use selection::{SelectionKind, SelectionPoint};
 pub use session::Session;

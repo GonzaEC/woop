@@ -5,6 +5,8 @@
 //! library.
 
 use alacritty_terminal::term::RenderableContent;
+
+use crate::blocks::ScreenBlock;
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::vte::ansi::{
     Color as AnsiColor, CursorShape as AnsiCursorShape, NamedColor,
@@ -116,6 +118,9 @@ pub struct Screen {
     pub cursor: Option<Cursor>,
     /// How many lines the view is scrolled back into history.
     pub scroll_offset: usize,
+    /// Command blocks in view, oldest first. Empty without shell
+    /// integration and while a full-screen application is shown.
+    pub blocks: Vec<ScreenBlock>,
 }
 
 impl Screen {
@@ -214,6 +219,7 @@ impl Screen {
             cells,
             cursor,
             scroll_offset: content.display_offset,
+            blocks: Vec::new(),
         }
     }
 }
