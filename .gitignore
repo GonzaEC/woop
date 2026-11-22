@@ -4,3 +4,7 @@
 .idea/
 .vscode/
 .claude/settings.local.json
+
+# Seeds saved by proptest after failing runs; failures become named
+# regression tests instead.
+*.proptest-regressions
