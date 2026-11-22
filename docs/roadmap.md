@@ -7,7 +7,7 @@ Each milestone produces something that can be built, run and tested.
 - [ ] **2. Classic terminal.**
   - [x] Window, GPU rendering of the grid, colours and text attributes, cursor.
   - [x] Keyboard input, paste, scrollback, resize.
-  - [ ] Mouse selection and copy.
+  - [x] Mouse selection (drag, double click for words, triple click for lines, Alt+drag for blocks) and copy.
 - [ ] **3. Command blocks.** Shell integration for PowerShell, bash, zsh and fish; output grouped into blocks with exit status and duration.
 - [ ] **4. Editor-like input.** Multi-line input with a free cursor, selection and editing shortcuts.
 - [ ] **5. Workspace.** Tabs, splits, command palette, TOML configuration with live reload, themes.

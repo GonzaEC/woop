@@ -60,6 +60,8 @@ pub struct Cell {
     pub wide: bool,
     /// This cell is the right half of a wide character and draws nothing.
     pub spacer: bool,
+    /// The cell is part of the current selection.
+    pub selected: bool,
 }
 
 impl Default for Cell {
@@ -72,6 +74,7 @@ impl Default for Cell {
             style: CellStyle::default(),
             wide: false,
             spacer: false,
+            selected: false,
         }
     }
 }
@@ -138,6 +141,7 @@ impl Screen {
         let mut cells = vec![Cell::default(); rows * cols];
         let offset = content.display_offset as i32;
         let colors = content.colors;
+        let selection = content.selection;
         let resolve = |color: AnsiColor| -> Color {
             match color {
                 AnsiColor::Spec(rgb) => Color::Rgb(rgb.r, rgb.g, rgb.b),
@@ -186,6 +190,16 @@ impl Screen {
             cell.wide = flags.contains(Flags::WIDE_CHAR);
             cell.spacer =
                 flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER);
+            cell.selected = selection.is_some_and(|range| range.contains(indexed.point));
+        }
+
+        // A wide character and its spacer are selected together.
+        for index in 1..cells.len() {
+            if cells[index].spacer && cells[index - 1].wide {
+                let selected = cells[index - 1].selected || cells[index].selected;
+                cells[index - 1].selected = selected;
+                cells[index].selected = selected;
+            }
         }
 
         let cursor = cursor_shape(content.cursor.shape).and_then(|shape| {
@@ -313,6 +327,22 @@ mod tests {
 
         let hidden = screen_after(3, 10, b"\x1b[?25l");
         assert_eq!(hidden.cursor, None);
+    }
+
+    #[test]
+    fn marks_selected_cells() {
+        use crate::SelectionPoint;
+
+        let mut term = Terminal::new(TerminalSize::new(1, 10));
+        term.advance("ab日cd".as_bytes());
+        term.start_selection(crate::SelectionKind::Simple, SelectionPoint::new(0, 1));
+        term.extend_selection(SelectionPoint {
+            right_half: true,
+            ..SelectionPoint::new(0, 2)
+        });
+
+        let selected: Vec<bool> = term.screen().row(0).iter().map(|c| c.selected).collect();
+        assert_eq!(&selected[..6], [false, true, true, true, false, false]);
     }
 
     #[test]

@@ -5,12 +5,14 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use alacritty_terminal::Term;
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 
 use crate::screen::Screen;
+use crate::selection::{SelectionKind, SelectionPoint};
 
 /// Size of the terminal screen, in character cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -223,6 +225,60 @@ impl Terminal {
     pub fn scroll_offset(&self) -> usize {
         self.term.grid().display_offset()
     }
+
+    /// Starts a new selection at `point`, replacing any previous one.
+    pub fn start_selection(&mut self, kind: SelectionKind, point: SelectionPoint) {
+        let kind = match kind {
+            SelectionKind::Simple => SelectionType::Simple,
+            SelectionKind::Word => SelectionType::Semantic,
+            SelectionKind::Line => SelectionType::Lines,
+            SelectionKind::Block => SelectionType::Block,
+        };
+        let (point, side) = self.grid_point(point);
+        self.term.selection = Some(Selection::new(kind, point, side));
+    }
+
+    /// Moves the end of the current selection to `point`. Does nothing if
+    /// there is no selection.
+    pub fn extend_selection(&mut self, point: SelectionPoint) {
+        let (point, side) = self.grid_point(point);
+        if let Some(selection) = &mut self.term.selection {
+            selection.update(point, side);
+        }
+    }
+
+    /// Removes the current selection.
+    pub fn clear_selection(&mut self) {
+        self.term.selection = None;
+    }
+
+    /// Returns the selected text, or `None` if nothing is selected.
+    ///
+    /// Rows joined by wrapping are copied as one line, and trailing
+    /// whitespace at the end of each line is removed.
+    pub fn selection_text(&self) -> Option<String> {
+        if self.term.selection.as_ref()?.is_empty() {
+            return None;
+        }
+        self.term
+            .selection_to_string()
+            .filter(|text| !text.is_empty())
+    }
+
+    /// Converts a point on the visible screen into a grid point, taking the
+    /// scroll position into account.
+    fn grid_point(&self, point: SelectionPoint) -> (Point, Side) {
+        let grid = self.term.grid();
+        let row = point.row.min(grid.screen_lines() - 1) as i32;
+        let col = point.col.min(grid.columns() - 1);
+        let line = Line(row - grid.display_offset() as i32);
+        let side = if point.right_half {
+            Side::Right
+        } else {
+            Side::Left
+        };
+        (Point::new(line, Column(col)), side)
+    }
 }
 
 /// Input modes requested by the application running in the terminal.
@@ -323,6 +379,63 @@ mod tests {
 
         assert_eq!(term.size(), TerminalSize::new(4, 20));
         assert_eq!(term.screen_lines().len(), 4);
+    }
+
+    fn right(row: usize, col: usize) -> SelectionPoint {
+        SelectionPoint {
+            right_half: true,
+            ..SelectionPoint::new(row, col)
+        }
+    }
+
+    #[test]
+    fn selects_text_across_rows() {
+        let mut term = terminal(3, 20);
+        term.advance(b"hello world\r\nsecond line");
+
+        term.start_selection(SelectionKind::Simple, SelectionPoint::new(0, 6));
+        term.extend_selection(right(1, 5));
+
+        assert_eq!(term.selection_text().as_deref(), Some("world\nsecond"));
+    }
+
+    #[test]
+    fn a_click_without_drag_selects_nothing() {
+        let mut term = terminal(2, 20);
+        term.advance(b"hello");
+
+        term.start_selection(SelectionKind::Simple, SelectionPoint::new(0, 2));
+        assert_eq!(term.selection_text(), None);
+
+        term.start_selection(SelectionKind::Simple, SelectionPoint::new(0, 0));
+        term.extend_selection(right(0, 1));
+        term.clear_selection();
+        assert_eq!(term.selection_text(), None);
+    }
+
+    #[test]
+    fn selects_words_and_lines() {
+        let mut term = terminal(2, 30);
+        term.advance(b"cargo build --release\r\nnext");
+
+        term.start_selection(SelectionKind::Word, SelectionPoint::new(0, 7));
+        assert_eq!(term.selection_text().as_deref(), Some("build"));
+
+        term.start_selection(SelectionKind::Line, SelectionPoint::new(0, 3));
+        assert_eq!(
+            term.selection_text().as_deref(),
+            Some("cargo build --release\n")
+        );
+    }
+
+    #[test]
+    fn selection_follows_the_scroll_position() {
+        let mut term = terminal(2, 10);
+        term.advance(b"one\r\ntwo\r\nthree");
+        term.scroll(1);
+
+        term.start_selection(SelectionKind::Line, SelectionPoint::new(0, 0));
+        assert_eq!(term.selection_text().as_deref(), Some("one\n"));
     }
 
     #[test]

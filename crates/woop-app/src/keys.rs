@@ -12,6 +12,8 @@ pub enum KeyAction {
     Input(Vec<u8>),
     /// Paste the clipboard contents.
     Paste,
+    /// Copy the selected text to the clipboard.
+    Copy,
     /// Scroll the view by a number of pages (positive is up).
     ScrollPages(i32),
 }
@@ -62,6 +64,7 @@ fn shortcut(key: &WindowKey, modifiers: WindowModifiers) -> Option<KeyAction> {
     let command = modifiers.logo() || (modifiers.control() && modifiers.shift());
 
     match (key, character) {
+        (_, Some('c')) if command => Some(KeyAction::Copy),
         (_, Some('v')) if command => Some(KeyAction::Paste),
         (WindowKey::Named(Named::Insert), _) if modifiers.shift() => Some(KeyAction::Paste),
         (WindowKey::Named(Named::PageUp), _) if modifiers.shift() => {
@@ -184,6 +187,23 @@ mod tests {
                 None
             ),
             Some(KeyAction::Paste)
+        );
+    }
+
+    #[test]
+    fn copy_shortcuts_leave_ctrl_c_to_the_shell() {
+        let ctrl_shift = WindowModifiers::CTRL | WindowModifiers::SHIFT;
+        assert_eq!(
+            press(character("C"), ctrl_shift, None),
+            Some(KeyAction::Copy)
+        );
+        assert_eq!(
+            press(character("c"), WindowModifiers::LOGO, None),
+            Some(KeyAction::Copy)
+        );
+        assert_eq!(
+            press(character("c"), WindowModifiers::CTRL, None),
+            input(&[0x03])
         );
     }
 

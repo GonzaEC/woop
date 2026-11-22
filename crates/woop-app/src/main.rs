@@ -8,7 +8,10 @@ use iced::futures::channel::mpsc::{self, UnboundedSender};
 use iced::futures::{SinkExt, Stream, StreamExt};
 use iced::widget::canvas;
 use iced::{Element, Length, Subscription, Task, clipboard};
-use woop_term::{Screen, Session, ShellCommand, TerminalEvent, TerminalSize, input};
+use woop_term::{
+    Screen, SelectionKind, SelectionPoint, Session, ShellCommand, TerminalEvent, TerminalSize,
+    input,
+};
 
 use keys::KeyAction;
 use theme::Palette;
@@ -45,6 +48,10 @@ pub enum Message {
     Resized(TerminalSize),
     /// Clipboard contents arrived for pasting.
     Pasted(Option<String>),
+    /// The left button was pressed: start a new selection.
+    SelectionStarted(SelectionPoint, SelectionKind),
+    /// The mouse moved while selecting.
+    SelectionExtended(SelectionPoint),
 }
 
 struct Woop {
@@ -92,6 +99,27 @@ impl Woop {
                 }
             }
             Message::Key(KeyAction::Paste) => return clipboard::read().map(Message::Pasted),
+            Message::Key(KeyAction::Copy) => {
+                if let Some(text) = self
+                    .session
+                    .as_ref()
+                    .and_then(|session| session.terminal().selection_text())
+                {
+                    return clipboard::write(text);
+                }
+            }
+            Message::SelectionStarted(point, kind) => {
+                if let Some(session) = &mut self.session {
+                    session.terminal_mut().start_selection(kind, point);
+                    self.refresh();
+                }
+            }
+            Message::SelectionExtended(point) => {
+                if let Some(session) = &mut self.session {
+                    session.terminal_mut().extend_selection(point);
+                    self.refresh();
+                }
+            }
             Message::Key(KeyAction::ScrollPages(pages)) => {
                 self.scroll(pages * i32::from(self.size.rows.saturating_sub(1).max(1)));
             }

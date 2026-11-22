@@ -11,10 +11,12 @@
 
 pub mod input;
 mod screen;
+mod selection;
 mod session;
 mod terminal;
 
 pub use screen::{Cell, CellStyle, Color, Cursor, CursorShape, Screen};
+pub use selection::{SelectionKind, SelectionPoint};
 pub use session::Session;
 pub use terminal::{CursorPosition, Terminal, TerminalEvent, TerminalMode, TerminalSize};
 pub use woop_pty::{ExitStatus, PtyError, ShellCommand};
