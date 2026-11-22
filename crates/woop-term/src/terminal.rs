@@ -257,11 +257,13 @@ impl Terminal {
         }
     }
 
-    /// Processes output that starts on a character boundary. A character
-    /// cut off at the end is kept for the next call: the emulator's parser
-    /// can skip up to two bytes, an ESC among them, after a character split
-    /// between two calls, which would put it out of step with the mark
-    /// scanner and change what is shown.
+    /// Processes output, keeping a character cut off at the end for the
+    /// next call. The emulator's parser can skip up to two bytes, an ESC
+    /// among them, when the second half of a split character is followed
+    /// by more text, which would put it out of step with the mark scanner
+    /// and change what is shown. With the incomplete end held back, whatever
+    /// the parser still buffers (an invalid sequence before it) is always
+    /// followed by a lead byte or ESC, which it handles like unsplit input.
     fn advance_joined(&mut self, bytes: &[u8]) {
         let (bytes, rest) = bytes.split_at(bytes.len() - incomplete_utf8_suffix(bytes));
         self.utf8_carry.extend_from_slice(rest);
@@ -763,11 +765,16 @@ mod tests {
     }
 
     /// The emulator's parser can skip up to two bytes (including an ESC)
-    /// after a character split between two reads. Woop never splits one.
+    /// after a character split between two reads, so the result must not
+    /// depend on where reads end.
     #[test]
     fn characters_split_between_reads_are_joined() {
         for (first, second) in [
             (&b"e\xcc"[..], &b"\x81\x1b\x800"[..]),
+            // An invalid sequence before the cut character.
+            (&b"e\xcc\xcc"[..], &b"\x81\x1b\x800"[..]),
+            (&b"e\xe6\x97\xcc"[..], &b"\x81\x1b]133;A\x07x"[..]),
+            (&b"\xf0\x9f\x98\xf0\x9f"[..], &b"\x98\x80\x1b[31mz"[..]),
             (&b"\xce"[..], &b"\x99)\xb5"[..]),
             (&b"x\xe6\x97"[..], &b"\xa5\x1b\xe6\x97\xa5"[..]),
         ] {
@@ -778,6 +785,36 @@ mod tests {
             split.advance(second);
 
             assert_eq!(split.screen(), whole.screen(), "{first:?} | {second:?}");
+        }
+    }
+
+    /// An OSC cut off at its limit with a multi-byte character at the cut,
+    /// followed by marks: the result is the same wherever the reads end.
+    #[test]
+    fn a_cut_off_sequence_is_independent_of_reads() {
+        use crate::marks::MAX_OSC_BYTES;
+
+        for shift in 0..4 {
+            let mut bytes =
+                format!("\x1b]0;{}", "x".repeat(MAX_OSC_BYTES - 4 - shift)).into_bytes();
+            bytes.extend("日本語".as_bytes());
+            bytes.extend(b"\r\n\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07");
+            let mut whole = terminal(4, 20);
+            whole.advance(&bytes);
+            let expected = (whole.screen(), whole.blocks().len());
+
+            let near_cut = MAX_OSC_BYTES - 8..MAX_OSC_BYTES + 8;
+            let near_marks = bytes.len() - 40..bytes.len();
+            for split in near_cut.chain(near_marks) {
+                let mut term = terminal(4, 20);
+                term.advance(&bytes[..split]);
+                term.advance(&bytes[split..]);
+                assert_eq!(
+                    (term.screen(), term.blocks().len()),
+                    expected,
+                    "shift {shift}, split {split}"
+                );
+            }
         }
     }
 

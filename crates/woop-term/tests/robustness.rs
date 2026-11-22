@@ -69,10 +69,12 @@ fn token() -> impl Strategy<Value = Vec<u8>> {
         1 => prop::collection::vec(0u8..0x80, 1..8),
     ];
     prop_oneof![
-        8 => common,
-        1 => prop::collection::vec(any::<u8>(), 1..8),
+        16 => common,
+        2 => prop::collection::vec(any::<u8>(), 1..8),
+        // Enough lines to fill and trim the scrollback within a few tokens.
+        1 => Just("line\r\n".repeat(3_000).into_bytes()),
         // Lead bytes of multi-byte characters, often left incomplete.
-        1 => prop::sample::select(vec![0x80_u8, 0xc3, 0xcc, 0xce, 0xe6, 0xf0, 0xff]).prop_map(|byte| vec![byte]),
+        2 => prop::sample::select(vec![0x80_u8, 0xc3, 0xcc, 0xce, 0xe6, 0xf0, 0xff]).prop_map(|byte| vec![byte]),
     ]
 }
 
@@ -106,18 +108,29 @@ fn op() -> impl Strategy<Value = Op> {
     ]
 }
 
-/// Everything observable about a terminal, except timings.
+/// A block's rows relative to the top of the screen (negative in the
+/// scrollback).
+type RelativeRows = (i64, Option<i64>, Option<i64>);
+
+/// Everything observable about a terminal that must not depend on how its
+/// output was split into reads. The scrollback's exact length does: it is
+/// trimmed back to 10,000 lines once it passes 10,400, and when that happens
+/// depends on read boundaries. Blocks are therefore compared by position
+/// relative to the screen, within the history both terminals still keep.
 #[derive(Debug, PartialEq)]
 struct Observed {
     screen: woop_term::Screen,
-    history: usize,
-    blocks: Vec<(String, Option<i32>, BlockState, Option<BlockRows>)>,
+    blocks: Vec<(String, Option<i32>, BlockState, Option<RelativeRows>)>,
 }
 
-fn observe(term: &Terminal) -> Observed {
+fn observe(term: &Terminal, kept_history: usize) -> Observed {
+    let history = term.history_size() as i64;
+    let relative = |rows: BlockRows| -> RelativeRows {
+        let row = |row: usize| row as i64 - history;
+        (row(rows.prompt), rows.output.map(row), rows.end.map(row))
+    };
     Observed {
         screen: term.screen(),
-        history: term.history_size(),
         blocks: term
             .blocks()
             .iter()
@@ -126,9 +139,10 @@ fn observe(term: &Terminal) -> Observed {
                     block.command().to_owned(),
                     block.exit_code(),
                     block.state(),
-                    term.block_rows(block),
+                    term.block_rows(block).map(relative),
                 )
             })
+            .filter(|(.., rows)| rows.is_some_and(|rows| rows.0 >= -(kept_history as i64)))
             .collect(),
     }
 }
@@ -209,7 +223,8 @@ proptest! {
         }
         split.advance(&bytes[start..]);
 
-        prop_assert_eq!(observe(&whole), observe(&split));
+        let kept = whole.history_size().min(split.history_size());
+        prop_assert_eq!(observe(&whole, kept), observe(&split, kept));
     }
 
     /// Whatever state garbage leaves behind, a full reset brings the
