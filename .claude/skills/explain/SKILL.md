@@ -13,7 +13,7 @@ The goal is understanding, not a summary. The reader should be able to explain t
 2. **Start with the big picture:** what problem this code solves and where it sits in the architecture (`docs/architecture.md`). Link the relevant ADR if one exists.
 3. **Walk through the code in execution order**, not file order. Reference locations as `path:line`.
 4. **Explain each Rust concept the first time it appears**, briefly and with this code as the example: ownership and borrowing, `&` vs `&mut`, `Result` and `?`, traits and `impl Trait`, `Box<dyn Trait>`, `Send`/`Sync`, threads and channels, `Drop`, `#[cfg]`, lifetimes when visible.
-5. **Explain the domain concepts** too: what a pseudo-terminal is, why ConPTY queries the cursor position, what escape sequences do, why output is read on another thread.
+5. **Explain the domain concepts** too: what a pseudo-terminal is, why ConPTY queries the cursor position, what escape sequences do, why output is read on another thread, how shells report prompts and commands with OSC 133 marks, and why block positions are stored as logical lines (reflow on resize).
 6. **Point out the design decisions and their trade-offs:** why this approach and not the obvious alternative.
 7. **End with three to five questions** an interviewer could ask about this code, each with a short model answer.
 
