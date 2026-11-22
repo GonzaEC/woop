@@ -9,12 +9,16 @@
 //!   up to date with its output.
 //! - [`input`] translates key presses and pasted text into terminal input.
 
+mod blocks;
 pub mod input;
+mod marks;
 mod screen;
 mod selection;
 mod session;
+pub mod shell_integration;
 mod terminal;
 
+pub use blocks::{Block, BlockRows, BlockState};
 pub use screen::{Cell, CellStyle, Color, Cursor, CursorShape, Screen};
 pub use selection::{SelectionKind, SelectionPoint};
 pub use session::Session;

@@ -29,3 +29,4 @@ Start from [the template](template.md) and add the record to the index below in 
 | [0008](0008-no-accounts-no-telemetry.md) | No accounts, no telemetry, optional bring-your-own AI | Accepted |
 | [0009](0009-pull-requests-gated-by-ci.md) | Pull requests gated by cross-platform CI | Accepted |
 | [0010](0010-screen-snapshots-and-wakeups.md) | Render from screen snapshots, woken by output notifications | Accepted |
+| [0011](0011-shell-integration-and-command-blocks.md) | Shell integration marks and command blocks anchored to logical lines | Accepted |

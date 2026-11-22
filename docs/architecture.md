@@ -31,6 +31,7 @@ graph TD
 | `Pty` | `woop-pty` | Owns the pseudo-terminal and the child process: input, resize, exit status |
 | `Terminal` | `woop-term` | Pure emulation state: feed it bytes, read the screen. No I/O, fully unit-testable |
 | `Session` | `woop-term` | Connects a `Pty` to a `Terminal`, reads output on a background thread and answers terminal queries |
+| `Block` | `woop-term` | One command from the shell integration: command text, exit code, duration and position in the scrollback |
 | `Screen` | `woop-term` | Snapshot of the visible cells, colours and cursor in Woop's own types, ready to draw |
 | `input` | `woop-term` | Encodes key presses and pasted text into the bytes applications expect |
 | `TerminalView` | `woop-app` | iced canvas program that draws a `Screen` and turns window events into messages |
@@ -41,7 +42,7 @@ PTY reading runs on a dedicated thread per session, so slow rendering never bloc
 
 ## Shell integration
 
-Command blocks rely on the shell emitting OSC 133 semantic prompt markers around the prompt, the command and its output. Woop will ship integration scripts for PowerShell, bash, zsh and fish. Without integration, Woop behaves as a standard terminal.
+Command blocks rely on the shell emitting OSC 133 semantic prompt marks around the prompt, the command and its output. Woop ships integration scripts for PowerShell, bash, zsh and fish in `crates/woop-term/shell/` and loads them automatically after the user's own configuration (`woop_term::shell_integration`). `woop-term` reads the marks from the output stream and keeps a list of `Block`s, whose positions are anchored to logical lines so they survive resizing ([ADR 0011](adr/0011-shell-integration-and-command-blocks.md)). Shells without integration work as in any terminal, without blocks.
 
 ## Key dependencies
 
