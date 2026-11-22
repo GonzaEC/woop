@@ -34,4 +34,5 @@ Start from [the template](template.md) and add the record to the index below in 
 | [0013](0013-bound-the-cost-of-program-output.md) | Bound the cost and the reach of program output | Accepted |
 | [0014](0014-property-based-robustness-tests.md) | Test untrusted input with property-based robustness tests | Accepted |
 | [0015](0015-write-input-on-a-dedicated-thread.md) | Write process input on a dedicated thread | Accepted |
-| [0016](0016-command-editor-at-the-prompt.md) | Edit commands in Woop's own editor while the shell waits at a prompt | Accepted |
+| [0016](0016-command-editor-at-the-prompt.md) | Edit commands in Woop's own editor while the shell waits at a prompt | Accepted; refined by 0017 |
+| [0017](0017-command-editor-key-handling.md) | Decide the command editor's keys when they are handled, and bound what it holds | Accepted |

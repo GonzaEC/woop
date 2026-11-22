@@ -1,6 +1,6 @@
 # Roadmap
 
-Each milestone produces something that can be built, run and tested, and is closed with a security and performance audit of what it added (see "Reviews" in `AGENTS.md`).
+Each milestone produces something that can be built, run and tested, and is closed with a security and performance audit of what it added (see "Reviews" in `AGENTS.md`). Features come first; the look of the interface is designed in one pass once they are in place (milestone 7).
 
 ## Quality track
 
@@ -23,7 +23,11 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
 - [ ] **Hardening from the command editor review** (low findings):
   - Forged prompt marks can turn the editor on while another program reads its input (a password prompt): the text is shown in the panel and kept in the history. Fixed by the per-session mark token above; until then, consider not recording history for a prompt that appeared while a command was running.
   - Without bracketed paste, tabs pasted into the editor trigger the shell's completion when the text is sent; replace them with spaces in that case.
-  - The editor's text has no size limit: a very large paste can stall the interface while it is laid out. Cap it, or send oversized pastes to the shell directly.
+  - Output that forges an output-start or prompt mark, or switches to the alternate screen, turns the editor off while the user types; the keys after it go to the shell on their own. Also fixed by the per-session mark token above.
+  - The panel counts logical lines, so a long wrapped line scrolls inside one row, and Up on the second row of a wrapped first line walks the history. Use the widget's visual lines.
+  - While the editor is active and focused, its caret blinks by redrawing twice per second at an idle prompt; measure the cost, or draw a caret that does not need it.
+  - Alt with a letter types the letter in the editor; consider ignoring it, as the shell's Alt shortcuts do not apply there.
+  - `Terminal::screen` takes about 90 µs at 50x200 but 700 µs at 100x300 (three times the cells, eight times the time); find out why.
 
 ## Milestones
 
@@ -39,10 +43,10 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
   - [x] Collapse a block's output (double-click its bar) and copy a block's command (Alt+click its bar).
   - [x] Right click pastes the clipboard.
   - [x] Milestone audit: security, performance and general reviews, long robustness runs. Fixed: copied commands now match what is displayed and cost bounded work per mark; blocks are identified by stable ids; folds near the top of the scrollback, scrolling and jumping with folds; per-frame cost with many collapsed blocks; bash keeps the exit status for the user's `PROMPT_COMMAND` and leaves a user's DEBUG trap alone. Low findings are listed in the quality track.
-- [ ] **4. Editor-like input.**
+- [x] **4. Editor-like input.**
   - [x] Command editor at the prompt: multi-line text with a free cursor, mouse and keyboard selection, copy, cut and paste; Enter runs, Shift+Enter breaks the line; in-memory history on Up and Down; Tab and Ctrl+R hand off to the shell's own completion and history search ([ADR 0016](adr/0016-command-editor-at-the-prompt.md)).
-  - [ ] Visual design of the command editor: it sits far from the prompt on a mostly empty screen, the marker is small and faint, and the panel does not read as part of the current block. Decide how the editor relates to the prompt and the blocks (for example, placing it right under the last block, or a block-styled input area).
-  - [ ] Milestone audit: security, performance and general reviews, long robustness runs.
+  - [x] Milestone audit: security, performance and general reviews, long robustness runs. Fixed: keys are decided when handled, so keys typed just after Enter reach the shell as typed and focus is never lost; only keys that keep the shell's line empty reach it from the editor; AltGr characters are typed instead of running shortcuts; the editor's text is bounded (a long single line made every key slow); the panel shrinks only at a new prompt; clearer panel states ([ADR 0017](adr/0017-command-editor-key-handling.md)). Low findings are listed in the quality track.
 - [ ] **5. Workspace.** Tabs, splits, command palette, TOML configuration with live reload, themes.
 - [ ] **6. Completions and assistant.** History and path completions, command specifications, optional AI providers (own API key or local model).
-- [ ] **7. Distribution.** Signed installers and packages for each platform, published from CI.
+- [ ] **7. Interface design.** One design pass over the whole interface once its features are in place: how the command editor relates to the prompt and the blocks (today it sits far from the prompt on a mostly empty screen, its marker is small and faint, and the panel does not read as part of the current block), blocks, tabs, panels and the default theme.
+- [ ] **8. Distribution.** Signed installers and packages for each platform, published from CI.

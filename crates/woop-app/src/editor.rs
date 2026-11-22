@@ -1,7 +1,7 @@
 //! The command editor's panel under the grid (ADR 0016).
 
 use iced::widget::text_editor::{self, Binding, Content, KeyPress, Status};
-use iced::widget::{Id, Space, column, container, operation, row, stack, text};
+use iced::widget::{Id, Space, column, container, mouse_area, operation, row, stack, text};
 use iced::{Background, Border, Element, Length, Padding, Task};
 
 use crate::Message;
@@ -31,15 +31,37 @@ pub struct Panel<'a> {
     pub lines: usize,
     /// How keys are interpreted on the grid.
     pub keys: KeyContext,
+    /// A message to show over the editor, if any.
+    pub notice: Option<&'a str>,
     /// Colours.
     pub palette: &'a Palette,
     /// Font and cell size of the grid, shared by the editor.
     pub metrics: Metrics,
 }
 
+/// Most text the editor holds, in bytes. Laying out text costs time on
+/// every key, so very large pastes go to the shell instead (measured with
+/// one line: 26 ms per key at 64 KiB, over half a second at 1 MiB).
+const MAX_TEXT_BYTES: usize = 64 * 1024;
+
+/// Longest line the editor holds, in bytes: a line is laid out again as a
+/// whole on every change within it.
+const MAX_LINE_BYTES: usize = 4 * 1024;
+
 /// Lines of text the panel needs for `content`, within its limits.
 pub fn lines_for(content: &Content) -> usize {
     content.line_count().clamp(1, MAX_LINES)
+}
+
+/// Whether pasting `text` keeps the editor within its limits.
+pub fn fits(content: &Content, text: &str) -> bool {
+    fits_text(&content.text(), text)
+}
+
+fn fits_text(current: &str, pasted: &str) -> bool {
+    let longest = |text: &str| text.lines().map(str::len).max().unwrap_or(0);
+    current.len() + pasted.len() <= MAX_TEXT_BYTES
+        && longest(current) + longest(pasted) <= MAX_LINE_BYTES
 }
 
 /// Gives the keyboard focus to the editor.
@@ -54,18 +76,12 @@ pub fn panel(panel: Panel<'_>) -> Element<'_, Message> {
         status,
         lines,
         keys,
+        notice,
         palette,
         metrics,
     } = panel;
     let active = matches!(status, GateStatus::Active | GateStatus::Confirm);
-    let cursor = content.cursor();
-    let context = EditorContext {
-        keys,
-        has_selection: cursor.selection.is_some(),
-        is_empty: content.is_empty(),
-        on_first_line: cursor.position.line == 0,
-        on_last_line: cursor.position.line + 1 >= content.line_count(),
-    };
+    let context = context(content, keys);
     let height = lines as f32 * metrics.cell_height + 2.0 * PADDING;
     let (foreground, background, selection) =
         (palette.foreground, palette.background, palette.selection);
@@ -73,7 +89,7 @@ pub fn panel(panel: Panel<'_>) -> Element<'_, Message> {
     let muted = theme::dim(foreground, background);
     let placeholder = match status {
         GateStatus::Active | GateStatus::Confirm => "",
-        GateStatus::HandedOff => "Editing in the shell's own line until the next prompt",
+        GateStatus::ShellLine => "Editing in the shell's own line until the next prompt",
         GateStatus::Running => "Running…",
     };
 
@@ -102,17 +118,23 @@ pub fn panel(panel: Panel<'_>) -> Element<'_, Message> {
             .on_action(Message::EditorAction)
             .key_binding(move |press| binding(press, context));
     }
+    let message = match (status, notice) {
+        (GateStatus::Confirm, _) => {
+            Some("The prompt changed while you typed: press Enter again to run")
+        }
+        (_, notice) => notice,
+    };
     let accent = match status {
-        GateStatus::Confirm => warning,
-        GateStatus::Active => palette.cursor,
-        GateStatus::HandedOff | GateStatus::Running => muted,
+        _ if message.is_some() => warning,
+        GateStatus::Active | GateStatus::Confirm => palette.cursor,
+        GateStatus::ShellLine | GateStatus::Running => muted,
     };
     let mut layers = stack![editor];
-    if status == GateStatus::Confirm {
+    if let Some(message) = message {
         // Drawn over the editor, so the grid keeps its size.
         layers = layers.push(
             container(
-                text("The prompt changed while you typed: press Enter again to run")
+                text(message)
                     .font(metrics.font)
                     .size(metrics.font_size)
                     .color(warning),
@@ -142,18 +164,53 @@ pub fn panel(panel: Panel<'_>) -> Element<'_, Message> {
             background: Some(Background::Color(accent)),
             ..container::Style::default()
         });
-    column![line, row![marker, layers]]
-        .width(Length::Fill)
+    // Any click on the panel, also outside the text, keeps the keyboard on
+    // the editor.
+    mouse_area(column![line, row![marker, layers]].width(Length::Fill))
+        .on_press(Message::FocusEditor)
         .into()
 }
 
+/// The editor's state needed to interpret a key press.
+pub fn context(content: &Content, keys: KeyContext) -> EditorContext {
+    let cursor = content.cursor();
+    EditorContext {
+        keys,
+        has_selection: cursor.selection.is_some(),
+        is_empty: content.is_empty(),
+        on_first_line: cursor.position.line == 0,
+        on_last_line: cursor.position.line + 1 >= content.line_count(),
+    }
+}
+
+/// Passes key presses on to the application, which decides what they mean
+/// with the state it has when it handles them: a key typed just after Enter
+/// may arrive once the editor is no longer active, and must then go to the
+/// shell like any key on the grid. Keys left to the grid's own shortcuts
+/// are not taken.
 fn binding(press: KeyPress, context: EditorContext) -> Option<Binding<Message>> {
-    match keys::editor_key(&press.key, press.modifiers, context) {
-        EditorKey::Edit => Binding::from_key_press(press),
-        EditorKey::Ignore => None,
-        EditorKey::Newline => Some(Binding::Enter),
-        EditorKey::Copy => Some(Binding::Copy),
-        EditorKey::Paste => Some(Binding::Paste),
-        key => Some(Binding::Custom(Message::EditorKey(key))),
+    let key = keys::editor_key(&press.key, press.modifiers, press.text.as_deref(), context);
+    (key != EditorKey::Ignore).then(|| Binding::Custom(Message::EditorPress(press)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pastes_within_the_limits_fit() {
+        assert!(fits_text("", "git status"));
+        assert!(fits_text("echo ", &"x".repeat(MAX_LINE_BYTES - 5)));
+        let lines = "y".repeat(1000) + "\n";
+        assert!(fits_text("", &lines.repeat(60)), "many short lines");
+    }
+
+    #[test]
+    fn very_long_text_or_lines_do_not_fit() {
+        // A minified file or base64: one huge line.
+        assert!(!fits_text("", &"x".repeat(MAX_LINE_BYTES + 1)));
+        assert!(!fits_text("echo ", &"x".repeat(MAX_LINE_BYTES)));
+        let lines = "y".repeat(100) + "\n";
+        assert!(!fits_text("", &lines.repeat(MAX_TEXT_BYTES / 100)));
     }
 }
