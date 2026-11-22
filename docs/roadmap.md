@@ -20,6 +20,10 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
   - bash 5.1+: elements of an array `PROMPT_COMMAND` after the first run after Woop's prompt hook.
   - End-to-end tests for fish and for PowerShell 7 with a profile that defines its own prompt.
   - Cache fold positions between snapshots, and walk only the view in `visible()`.
+- [ ] **Hardening from the command editor review** (low findings):
+  - Forged prompt marks can turn the editor on while another program reads its input (a password prompt): the text is shown in the panel and kept in the history. Fixed by the per-session mark token above; until then, consider not recording history for a prompt that appeared while a command was running.
+  - Without bracketed paste, tabs pasted into the editor trigger the shell's completion when the text is sent; replace them with spaces in that case.
+  - The editor's text has no size limit: a very large paste can stall the interface while it is laid out. Cap it, or send oversized pastes to the shell directly.
 
 ## Milestones
 
@@ -35,7 +39,9 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
   - [x] Collapse a block's output (double-click its bar) and copy a block's command (Alt+click its bar).
   - [x] Right click pastes the clipboard.
   - [x] Milestone audit: security, performance and general reviews, long robustness runs. Fixed: copied commands now match what is displayed and cost bounded work per mark; blocks are identified by stable ids; folds near the top of the scrollback, scrolling and jumping with folds; per-frame cost with many collapsed blocks; bash keeps the exit status for the user's `PROMPT_COMMAND` and leaves a user's DEBUG trap alone. Low findings are listed in the quality track.
-- [ ] **4. Editor-like input.** Multi-line input with a free cursor, selection and editing shortcuts.
+- [ ] **4. Editor-like input.**
+  - [x] Command editor at the prompt: multi-line text with a free cursor, mouse and keyboard selection, copy, cut and paste; Enter runs, Shift+Enter breaks the line; in-memory history on Up and Down; Tab and Ctrl+R hand off to the shell's own completion and history search ([ADR 0016](adr/0016-command-editor-at-the-prompt.md)).
+  - [ ] Milestone audit: security, performance and general reviews, long robustness runs.
 - [ ] **5. Workspace.** Tabs, splits, command palette, TOML configuration with live reload, themes.
 - [ ] **6. Completions and assistant.** History and path completions, command specifications, optional AI providers (own API key or local model).
 - [ ] **7. Distribution.** Signed installers and packages for each platform, published from CI.

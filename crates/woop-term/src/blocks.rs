@@ -354,6 +354,27 @@ impl BlockList {
             .count();
     }
 
+    /// Returns the id of the last block if the shell is waiting for its
+    /// command with an empty line: the command start mark was received, no
+    /// output started, and the cursor is still where the input starts.
+    /// Costs at most a walk over the screen.
+    pub(crate) fn awaiting_command<T>(&self, term: &Term<T>) -> Option<u64> {
+        let block = self.blocks.last()?;
+        let input = block.input?;
+        if block.state() != BlockState::Prompt {
+            return None;
+        }
+        let cursor = anchor_at(term, term.grid().cursor.point, self.history_lines)?;
+        (cursor == input).then_some(block.id)
+    }
+
+    /// Returns the id of the last block if the shell is at its prompt, past
+    /// the command start mark and before any output, wherever the cursor is.
+    pub(crate) fn command_prompt(&self) -> Option<u64> {
+        let block = self.blocks.last()?;
+        (block.state() == BlockState::Prompt && block.input.is_some()).then_some(block.id)
+    }
+
     /// The block with identifier `id`, if it still exists. Blocks are kept in
     /// creation order, so identifiers are sorted.
     pub(crate) fn get(&self, id: u64) -> Option<&Block> {
@@ -1369,5 +1390,67 @@ mod tests {
     fn ignores_marks_on_the_alternate_screen() {
         let term = terminal(5, 20, &format!("\x1b[?1049h{A}$ {B}"));
         assert!(term.blocks().is_empty());
+    }
+
+    #[test]
+    fn awaits_a_command_only_with_an_empty_line_after_the_input_mark() {
+        // Without integration, nothing is awaited.
+        assert_eq!(terminal(5, 20, "$ ").awaiting_command(), None);
+        // The prompt is drawn but the input has not started yet.
+        assert_eq!(terminal(5, 20, &format!("{A}$ ")).awaiting_command(), None);
+
+        let term = terminal(5, 20, &format!("{A}$ {B}"));
+        let id = term.blocks()[0].id();
+        assert_eq!(term.awaiting_command(), Some(id));
+        assert_eq!(term.screen().awaiting_command, Some(id));
+
+        // Text in the shell's own line (typed ahead or handed off) is left
+        // to the shell.
+        assert_eq!(
+            terminal(5, 20, &format!("{A}$ {B}ls")).awaiting_command(),
+            None
+        );
+        // A running command is not waiting for one.
+        assert_eq!(
+            terminal(5, 20, &format!("{A}$ {B}ls\r\n{C}")).awaiting_command(),
+            None
+        );
+        // The next prompt is awaited again.
+        let term = terminal(10, 40, &run("ls", "one\r\n", 0));
+        assert_eq!(term.awaiting_command(), Some(term.blocks()[1].id()));
+    }
+
+    #[test]
+    fn the_command_prompt_stays_while_the_cursor_moves() {
+        let term = terminal(5, 20, &format!("{A}$ {B}"));
+        let id = term.blocks()[0].id();
+        assert_eq!(term.screen().command_prompt, Some(id));
+
+        // Background output moves the cursor: the line may no longer be
+        // empty, but the prompt is still waiting for its command.
+        let moved = terminal(5, 20, &format!("{A}$ {B}hi\r\n"));
+        assert_eq!(moved.screen().awaiting_command, None);
+        assert_eq!(moved.screen().command_prompt, Some(id));
+
+        assert_eq!(
+            terminal(5, 20, &format!("{A}$ {B}ls\r\n{C}"))
+                .screen()
+                .command_prompt,
+            None
+        );
+        assert_eq!(
+            terminal(5, 20, &format!("{A}$ ")).screen().command_prompt,
+            None
+        );
+    }
+
+    #[test]
+    fn awaits_no_command_on_the_alternate_screen() {
+        let mut term = terminal(5, 20, &format!("{A}$ {B}"));
+        term.advance(b"\x1b[?1049h");
+        assert_eq!(term.awaiting_command(), None);
+        assert_eq!(term.screen().awaiting_command, None);
+        term.advance(b"\x1b[?1049l");
+        assert!(term.awaiting_command().is_some());
     }
 }

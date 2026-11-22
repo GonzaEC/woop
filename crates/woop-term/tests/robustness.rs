@@ -133,6 +133,12 @@ fn comparable_screen(term: &Terminal) -> woop_term::Screen {
         block.duration = None;
         block.id = 0;
     }
+    if screen.awaiting_command.is_some() {
+        screen.awaiting_command = Some(0);
+    }
+    if screen.command_prompt.is_some() {
+        screen.command_prompt = Some(0);
+    }
     screen
 }
 
@@ -317,6 +323,22 @@ proptest! {
         for ch in body.chars() {
             let allowed = !ch.is_control() || ch == '\t' || ch == '\r' || (mode.bracketed_paste && ch == '\n');
             prop_assert!(allowed, "{ch:?} in {body:?}");
+        }
+    }
+
+    /// A command from the editor is its pasted text plus one carriage
+    /// return, and text typed into the shell's line never contains a line
+    /// break that would run it early.
+    #[test]
+    fn editor_text_cannot_act_as_keys(text in pasted(), mode in modes()) {
+        let command = input::encode_command(&text, mode);
+        prop_assert_eq!(command.last(), Some(&b'\r'));
+        let body = &command[..command.len() - 1];
+        if !body.is_empty() {
+            prop_assert_eq!(body, &input::encode_paste(&text, mode)[..]);
+        }
+        if let Some(line) = input::encode_text_for_line(&text, mode) {
+            prop_assert!(!line.contains(&b'\r') && !line.contains(&b'\n'));
         }
     }
 

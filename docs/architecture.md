@@ -47,6 +47,10 @@ Command blocks rely on the shell emitting OSC 133 semantic prompt marks around t
 
 `Terminal::screen` builds each snapshot from a list of view rows. With no collapsed block this is simply the grid lines in view; with collapsed blocks, each hidden output becomes one summary row, and the view is filled from above at the bottom of the scrollback or from its top line when scrolled back. Scrolling, jumping between blocks and mapping mouse positions to text all go through the same rows, so they agree with what is drawn. The rows hidden by folds are found in one walk over the grid per snapshot.
 
+## Command editor
+
+While the shell waits for a command with an empty line (`Screen::awaiting_command`, from the marks and the cursor position), keys go to Woop's own editor, an iced text editor in a panel under the grid, instead of the shell ([ADR 0016](adr/0016-command-editor-at-the-prompt.md)). `keys::editor_key` decides what each key means there; Enter sends the text through `input::encode_command` (sanitised like a paste, then a carriage return), and Tab or Ctrl+R hand the text to the shell's own line editor for completion and history search. Submitted commands are kept in an in-memory `History`. Without shell integration, in full-screen applications and while a command runs, keys reach the shell as before.
+
 ## Key dependencies
 
 | Area | Choice | Reason |

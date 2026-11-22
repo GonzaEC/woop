@@ -125,6 +125,12 @@ pub struct Screen {
     /// Command blocks in view, oldest first. Empty without shell
     /// integration and while a full-screen application is shown.
     pub blocks: Vec<ScreenBlock>,
+    /// Id of the block whose command the shell is waiting for, with its
+    /// line still empty ([`crate::Terminal::awaiting_command`]).
+    pub awaiting_command: Option<u64>,
+    /// Id of the block whose prompt is shown, past the command start mark
+    /// and before any output, whether or not the shell's line is empty.
+    pub command_prompt: Option<u64>,
 }
 
 impl Screen {
@@ -246,6 +252,8 @@ impl Screen {
             cursor,
             scroll_offset: content.display_offset,
             blocks: Vec::new(),
+            awaiting_command: None,
+            command_prompt: None,
         }
     }
 }

@@ -133,6 +133,41 @@ pub fn encode_paste(text: &str, mode: TerminalMode) -> Vec<u8> {
     }
 }
 
+/// Encodes a command written in Woop's editor and submitted with Enter: the
+/// text, sanitised and wrapped as a paste ([`encode_paste`]), followed by a
+/// carriage return that runs it.
+///
+/// Shells that requested bracketed paste receive a multi-line command as
+/// one command; others run each line in turn, as if it were typed.
+pub fn encode_command(text: &str, mode: TerminalMode) -> Vec<u8> {
+    let mut bytes = encode_text(text, mode);
+    bytes.push(b'\r');
+    bytes
+}
+
+/// Encodes text written in Woop's editor to be typed into the shell's own
+/// line without running it, or `None` if it has several lines.
+///
+/// A line break would run part of the text unless the shell treats it as a
+/// paste, and the bracketed paste mode cannot prove that: program output
+/// can turn it on behind a shell that does not understand it.
+pub fn encode_text_for_line(text: &str, mode: TerminalMode) -> Option<Vec<u8>> {
+    if text.contains(['\r', '\n']) {
+        return None;
+    }
+    Some(encode_text(text, mode))
+}
+
+/// Like [`encode_paste`], but empty text produces nothing, not even empty
+/// bracketed paste markers.
+fn encode_text(text: &str, mode: TerminalMode) -> Vec<u8> {
+    if text.is_empty() {
+        Vec::new()
+    } else {
+        encode_paste(text, mode)
+    }
+}
+
 fn cursor_key(letter: u8, parameter: u8, mode: TerminalMode) -> Vec<u8> {
     if parameter > 1 {
         format!("\x1b[1;{parameter}{}", char::from(letter)).into_bytes()
@@ -276,6 +311,56 @@ mod tests {
         assert_eq!(
             encode_paste("ls\x1b[201~rm", mode),
             b"\x1b[200~ls[201~rm\x1b[201~"
+        );
+    }
+
+    fn bracketed() -> TerminalMode {
+        TerminalMode {
+            bracketed_paste: true,
+            ..TerminalMode::default()
+        }
+    }
+
+    #[test]
+    fn commands_end_with_a_carriage_return() {
+        assert_eq!(encode_command("ls -la", normal()), b"ls -la\r");
+        assert_eq!(encode_command("", normal()), b"\r");
+        assert_eq!(encode_command("", bracketed()), b"\r");
+        assert_eq!(
+            encode_command("a\nb", bracketed()),
+            b"\x1b[200~a\nb\x1b[201~\r"
+        );
+        assert_eq!(encode_command("a\r\nb", normal()), b"a\rb\r");
+    }
+
+    #[test]
+    fn commands_cannot_carry_control_characters() {
+        // Hidden keys or an early end of the bracketed paste must not reach
+        // the shell, however the text got into the editor.
+        assert_eq!(
+            encode_command("echo\x03 x\x1b[201~\x15", bracketed()),
+            b"\x1b[200~echo x[201~\x1b[201~\r"
+        );
+    }
+
+    #[test]
+    fn multi_line_text_is_never_typed_into_the_line() {
+        assert_eq!(
+            encode_text_for_line("git co", normal()).as_deref(),
+            Some(&b"git co"[..])
+        );
+        assert_eq!(
+            encode_text_for_line("", bracketed()).as_deref(),
+            Some(&b""[..])
+        );
+        assert_eq!(encode_text_for_line("a\nb", normal()), None);
+        assert_eq!(encode_text_for_line("a\rb", normal()), None);
+        // Output can turn bracketed paste on behind a shell that ignores
+        // it, so the mode does not make a line break safe.
+        assert_eq!(encode_text_for_line("a\nb", bracketed()), None);
+        assert_eq!(
+            encode_text_for_line("git co", bracketed()).as_deref(),
+            Some(&b"\x1b[200~git co\x1b[201~"[..])
         );
     }
 }
