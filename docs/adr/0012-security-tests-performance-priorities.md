@@ -44,5 +44,5 @@ Every change is judged in this order. When two of them conflict, the earlier one
 
 - Some conveniences arrive later or behind an opt-in (for example, letting programs write to the clipboard).
 - Pull requests take longer: tests are mandatory, and hot-path changes need numbers.
-- Reviews (human or automated) check security first; see the reviewer guidelines in `AGENTS.md` and `.claude/agents/reviewer.md`.
+- Reviews (human or automated) check security first. Changes in sensitive areas also get a specialist security or performance review; see the "Reviews" section of `AGENTS.md` and the checklists in `.claude/agents/`.
 - The CI pipeline grows to include dependency checks and robustness tests, which are tracked in the roadmap.

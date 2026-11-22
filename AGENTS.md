@@ -75,6 +75,22 @@ Automated tests cannot judge how the window looks or feels (rendering, keyboard,
 
   `crates/woop-term/tests/shell_integration.rs` runs the scripts in real shells. When developing on Windows, the bash and zsh scripts are only exercised by CI; check its logs to confirm those tests ran.
 
+## Reviews
+
+Every non-trivial change gets a general review before it is merged. Two areas also get a specialist review, whose checklists in `.claude/agents/` are plain Markdown and can be followed by any person or tool:
+
+| Review | When | Checklist |
+| --- | --- | --- |
+| General | Every non-trivial change | [`reviewer.md`](.claude/agents/reviewer.md) |
+| Security | The change touches program output handling (escape sequences, marks, replies), input or paste, the clipboard, process spawning, files Woop writes, shell integration scripts, dependencies or secrets | [`security-reviewer.md`](.claude/agents/security-reviewer.md) |
+| Performance | The change touches reading, parsing, block tracking, snapshots or drawing, start-up or memory use | [`performance-reviewer.md`](.claude/agents/performance-reviewer.md) |
+
+Security findings are fixed before anything else in the pull request.
+
+## Keeping this guide current
+
+This guide, the skills and the review checklists must learn from experience. When a bug, a CI failure, a review finding or a correction reveals something that a rule would have prevented, update the right place in the same pull request: a regression test for the bug, `AGENTS.md` for rules, a skill for workflow steps, a review checklist for what reviews should catch, an ADR for decisions. The [`learn`](.claude/skills/learn/SKILL.md) skill describes the process. Keep entries short, precise and free of personal details.
+
 ## Decisions
 
 Architecturally significant changes (new structural dependency, crate boundary change, cross-cutting rule) need a new ADR in `docs/adr/`, using `docs/adr/template.md`, added to the index in the same pull request. Never edit an accepted ADR; supersede it with a new one.

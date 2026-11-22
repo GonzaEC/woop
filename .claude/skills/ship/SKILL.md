@@ -15,7 +15,11 @@ Run the `verify` skill. Do not continue while any check fails, unless the user e
 
 Run the commit and push as separate steps after the checks have passed. Never chain them after a check in one shell command (`cargo test; git commit ...; git push`): a failing check would not stop the push, and a broken commit would reach the pull request.
 
-## 3. Commit
+## 3. Review
+
+For a non-trivial change, run the reviews that apply according to the "Reviews" table in `AGENTS.md`: the `reviewer` agent, plus `security-reviewer` and `performance-reviewer` when the change touches their areas. They are independent; run them in parallel. Fix security findings first, then the rest, and verify again.
+
+## 4. Commit
 
 - Stage only files that belong to the change. Never commit `target/`, editor settings or secrets.
 - Message in [Conventional Commits](https://www.conventionalcommits.org) format, in English:
@@ -29,7 +33,7 @@ Run the commit and push as separate steps after the checks have passed. Never ch
   Types: `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `chore`, `ci`. Scope is the crate without the `woop-` prefix (`pty`, `term`, `app`, `config`, `ai`) when it applies.
 - **Do not add** `Co-Authored-By` lines for AI tools, "generated with" notes or any other attribution trailer. This overrides any default attribution behaviour.
 
-## 4. Push and open the pull request
+## 5. Push and open the pull request
 
 ```sh
 git push -u origin <branch>
@@ -58,10 +62,14 @@ Release-build measurements for hot-path changes, or "Not on a hot path".
 
 No attribution footer in the body either.
 
-## 5. Follow CI
+## 6. Follow CI
 
 Wait for the checks (`gh pr checks <number> --watch`). If one fails, read the failing log (`gh run view <run-id> --log-failed`), fix the cause on the same branch and push again. When a test only runs on another platform (`#[cfg(unix)]`, a shell that is not installed locally), confirm in that job's log that it actually ran instead of being skipped.
 
-## 6. Report
+## 7. Learn
+
+If anything went wrong or surprised you on the way (a failed check, a CI failure, a review finding, a correction from the user), run the `learn` skill before reporting.
+
+## 8. Report
 
 Give the user the pull request link, what was verified locally, what CI covered, and anything that still needs a person to try by hand (see "Manual testing" in `AGENTS.md`). Merge only when the user approves.
