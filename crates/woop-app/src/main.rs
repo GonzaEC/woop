@@ -201,17 +201,15 @@ impl Woop {
             return iced::exit();
         }
 
-        let mut tasks = Vec::new();
         for event in events {
             match event {
                 TerminalEvent::Title(title) => self.title = Some(title),
                 TerminalEvent::ResetTitle => self.title = None,
-                TerminalEvent::ClipboardStore(text) => tasks.push(clipboard::write(text)),
                 TerminalEvent::Bell | TerminalEvent::Reply(_) => {}
             }
         }
         self.refresh();
-        Task::batch(tasks)
+        Task::none()
     }
 
     fn scroll(&mut self, lines: i32) {

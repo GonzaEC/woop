@@ -14,6 +14,13 @@ Use GitHub's [private vulnerability reporting](https://github.com/GonzaEC/woop/s
 
 Security is Woop's first priority ([ADR 0012](docs/adr/0012-security-tests-performance-priorities.md)). Among the measures in place:
 
+- Output from programs is treated as untrusted ([ADR 0013](docs/adr/0013-bound-the-cost-of-program-output.md)):
+  - programs cannot read or write the clipboard;
+  - output waits in a bounded queue, so a program that floods the terminal slows itself down instead of exhausting memory or freezing the window;
+  - shell integration marks cost bounded work, whatever a program prints;
+  - escape sequences that never end are cut off, and window titles are limited in length and stripped of control characters.
+- Pasted text cannot carry escape sequences that end bracketed paste.
+- Shell integration files are private to the user on Unix.
 - Woop's own code contains no `unsafe`; the compiler rejects it across the workspace.
 - Every pull request, and a weekly scheduled run, checks all dependencies (direct and transitive) against the RustSec advisory database for vulnerabilities, unsound code, unmaintained crates and yanked versions, and checks their licences and sources, with the policy in [`deny.toml`](deny.toml). Accepted exceptions are listed there, each with its reason; today they all come from upstream crates that Woop cannot update on its own.
 - Dependency and CI updates are proposed automatically after a one-week waiting period. Security fixes for dependencies are proposed as soon as GitHub's advisory database lists the issue and a compatible fixed version exists.

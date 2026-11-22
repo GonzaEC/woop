@@ -13,7 +13,9 @@
 //! [`Terminal`]: crate::Terminal
 
 use std::ffi::OsStr;
-use std::path::PathBuf;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 
 use woop_pty::ShellCommand;
 
@@ -93,15 +95,63 @@ pub fn apply(command: ShellCommand) -> ShellCommand {
 /// Writes integration files into the per-user directory and returns it.
 fn write_files(files: &[(&str, &str)]) -> Option<PathBuf> {
     let dir = integration_dir()?;
-    std::fs::create_dir_all(&dir).ok()?;
+    write_files_in(&dir, files).ok()?;
+    Some(dir)
+}
+
+/// Writes `files` into `dir`, creating it if needed. On Unix the directory
+/// and the files are made private to the user (modes 700 and 600), also
+/// when they already existed with wider permissions: the shell runs these
+/// files at start-up, so nobody else may be able to change them.
+fn write_files_in(dir: &Path, files: &[(&str, &str)]) -> io::Result<()> {
+    create_private_dir(dir)?;
     for (name, contents) in files {
         let path = dir.join(name);
         // Skip the write when the file is already up to date.
-        if std::fs::read_to_string(&path).ok().as_deref() != Some(*contents) {
-            std::fs::write(&path, contents).ok()?;
+        if fs::read_to_string(&path).ok().as_deref() != Some(*contents) {
+            write_private(&path, contents)?;
         }
+        make_private(&path, 0o600)?;
     }
-    Some(dir)
+    Ok(())
+}
+
+/// Writes a file that is private from the moment it is created on Unix.
+fn write_private(path: &Path, contents: &str) -> io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    io::Write::write_all(&mut options.open(path)?, contents.as_bytes())
+}
+
+fn create_private_dir(dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+    }
+    #[cfg(not(unix))]
+    fs::create_dir_all(dir)?;
+    make_private(dir, 0o700)
+}
+
+/// Restricts `path` to its owner on Unix. Elsewhere, files in the user's
+/// profile are already private to the user.
+#[cfg_attr(not(unix), allow(unused_variables))]
+fn make_private(path: &Path, mode: u32) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    }
+    Ok(())
 }
 
 /// Directory for integration files: inside the user's cache directory, so
@@ -181,6 +231,41 @@ mod tests {
     fn fish_receives_the_script_inline() {
         let command = apply(ShellCommand::new("fish"));
         assert_eq!(command.args, ["--init-command", FISH]);
+    }
+
+    #[test]
+    fn writes_and_updates_integration_files() {
+        let dir = std::env::temp_dir().join(format!("woop-files-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+
+        write_files_in(&dir, &[("a", "one")]).expect("write");
+        write_files_in(&dir, &[("a", "two")]).expect("update");
+        assert_eq!(fs::read_to_string(dir.join("a")).expect("read"), "two");
+
+        fs::remove_dir_all(&dir).expect("clean up");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn integration_files_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("woop-private-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        // A directory and file left with permissions others can use.
+        fs::create_dir_all(&dir).expect("create");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o777)).expect("chmod dir");
+        fs::write(dir.join("a"), "old").expect("write");
+        fs::set_permissions(dir.join("a"), fs::Permissions::from_mode(0o666)).expect("chmod");
+
+        write_files_in(&dir, &[("a", "new"), ("b", "other")]).expect("write");
+
+        let mode = |path: &Path| fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("a")), 0o600);
+        assert_eq!(mode(&dir.join("b")), 0o600);
+
+        fs::remove_dir_all(&dir).expect("clean up");
     }
 
     #[test]

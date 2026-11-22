@@ -19,6 +19,16 @@ use crate::marks::Mark;
 /// Maximum number of blocks kept. Older blocks are forgotten first.
 const MAX_BLOCKS: usize = 10_000;
 
+/// Number of old blocks forgotten at once when [`MAX_BLOCKS`] is exceeded.
+const FORGET_BATCH: usize = 1_000;
+
+/// Longest walk over wrapped rows when locating the start of a logical
+/// line. A shell's prompt never sits this deep inside a wrapped line.
+const MAX_WALK_ROWS: i32 = 256;
+
+/// Most rows a command line may span for its text to be recorded.
+const MAX_COMMAND_ROWS: usize = 100;
+
 /// Where a block is in its life cycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockState {
@@ -55,6 +65,12 @@ impl Block {
             started_at: None,
             duration: None,
         }
+    }
+
+    fn anchors(&self) -> impl Iterator<Item = Anchor> {
+        [Some(self.prompt), self.input, self.output, self.end]
+            .into_iter()
+            .flatten()
     }
 
     /// Returns where the block is in its life cycle.
@@ -101,8 +117,9 @@ pub struct BlockRows {
     pub end: Option<usize>,
 }
 
-/// A position in the scrollback that survives reflow.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A position in the scrollback that survives reflow. Anchors compare by
+/// logical line, then by offset: the order they appear in the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Anchor {
     /// Logical line, counted from the top of the scrollback.
     line: usize,
@@ -111,9 +128,17 @@ struct Anchor {
 }
 
 /// The blocks of a terminal, oldest first.
+///
+/// Marks can come from any program, so every operation triggered by a mark
+/// costs at most a walk over the visible screen plus a bounded number of
+/// rows, never over the whole scrollback (ADR 0012).
 #[derive(Debug, Default)]
 pub(crate) struct BlockList {
     blocks: Vec<Block>,
+    /// Number of logical lines that end in the scrollback above the screen,
+    /// that is, the logical line of the first screen row. Kept up to date
+    /// incrementally by the owner as rows scroll into or out of history.
+    history_lines: usize,
 }
 
 impl BlockList {
@@ -124,8 +149,15 @@ impl BlockList {
     /// Updates the blocks for a mark received with the cursor at its
     /// current position.
     pub(crate) fn apply<T>(&mut self, mark: Mark, term: &Term<T>, now: Instant) {
-        let anchor = anchor_at(term, term.grid().cursor.point);
+        let cursor = term.grid().cursor.point;
+        // Marks inside an unusually long wrapped line cannot be anchored
+        // cheaply; they are ignored, as a shell never prints its prompt there.
+        let Some(anchor) = anchor_at(term, cursor, self.history_lines) else {
+            return;
+        };
         match mark {
+            // Handled by the terminal, which owns the history.
+            Mark::HistoryCleared | Mark::SequenceTooLong => {}
             Mark::PromptStart => {
                 // A prompt that never ran a command (for example after
                 // Ctrl+C at the prompt) is replaced.
@@ -136,24 +168,35 @@ impl BlockList {
                 {
                     self.blocks.pop();
                 }
-                // A running command that never reported its end is closed.
+                // A running command that never reported its end is closed,
+                // never before its own output.
                 if let Some(block) = self.current(BlockState::Running) {
-                    block.end = Some(anchor);
+                    block.end = block.output.max(Some(anchor));
                 }
                 self.blocks.push(Block::new(anchor));
                 if self.blocks.len() > MAX_BLOCKS {
-                    self.blocks.remove(0);
+                    // Forget old blocks in batches, so the cost of shifting
+                    // the list is spread over many new blocks.
+                    self.blocks.drain(..FORGET_BATCH);
                 }
             }
+            // A mark can only move forward from the block's previous one.
+            // Marks that would point backwards (forged output, or a screen
+            // rewritten between marks) are ignored, so a block's anchors are
+            // always in order.
             Mark::CommandStart => {
-                if let Some(block) = self.current(BlockState::Prompt) {
+                if let Some(block) = self.current(BlockState::Prompt)
+                    && anchor >= block.prompt
+                {
                     block.input = Some(anchor);
                 }
             }
             Mark::OutputStart => {
-                if let Some(block) = self.current(BlockState::Prompt) {
+                if let Some(block) = self.current(BlockState::Prompt)
+                    && anchor >= block.input.unwrap_or(block.prompt)
+                {
                     let start = block.input.unwrap_or(block.prompt);
-                    block.command = text_between(term, start, anchor);
+                    block.command = text_before(term, start, cursor, anchor);
                     block.output = Some(anchor);
                     block.started_at = Some(now);
                 }
@@ -162,6 +205,9 @@ impl BlockList {
                 let Some(block) = self.current(BlockState::Running) else {
                     return;
                 };
+                if block.output.is_some_and(|output| anchor < output) {
+                    return;
+                }
                 if block.command.is_empty() {
                     // Submitting an empty line is not a command.
                     self.blocks.pop();
@@ -180,7 +226,11 @@ impl BlockList {
         if lines == 0 {
             return;
         }
-        self.blocks.retain(|block| block.prompt.line >= lines);
+        self.history_lines = self.history_lines.saturating_sub(lines);
+        // A block is kept only if every anchor survives, so no position can
+        // go below zero even if the anchors were ever out of order.
+        self.blocks
+            .retain(|block| block.anchors().all(|anchor| anchor.line >= lines));
         for block in &mut self.blocks {
             for anchor in [
                 Some(&mut block.prompt),
@@ -201,11 +251,30 @@ impl BlockList {
         self.blocks.clear();
     }
 
+    /// Counts the logical lines in the scrollback from scratch, after the
+    /// history was reflowed or cleared. Linear in the history size, so it is
+    /// only used for events the user causes, not for output.
+    pub(crate) fn recount_history<T>(&mut self, term: &Term<T>) {
+        self.history_lines = line_starts_in_top_rows(term, term.grid().history_size());
+    }
+
+    /// Accounts for `rows` rows that just scrolled from the screen into the
+    /// scrollback.
+    pub(crate) fn history_grew<T>(&mut self, term: &Term<T>, rows: usize) {
+        self.history_lines += (-(rows as i32)..0)
+            .filter(|&row| !wraps(term, Line(row)))
+            .count();
+    }
+
     /// Returns the rows of `block` in the current grid.
-    pub(crate) fn rows<T>(term: &Term<T>, block: &Block) -> Option<BlockRows> {
+    pub(crate) fn rows<T>(&self, term: &Term<T>, block: &Block) -> Option<BlockRows> {
         let history = term.grid().history_size();
         let absolute = |point: Point| (point.line.0 + history as i32) as usize;
-        let row = |anchor: Option<Anchor>| anchor.and_then(|a| point_of(term, a)).map(absolute);
+        let row = |anchor: Option<Anchor>| {
+            anchor
+                .and_then(|a| point_of(term, a, self.history_lines))
+                .map(absolute)
+        };
         Some(BlockRows {
             prompt: row(Some(block.prompt))?,
             output: row(block.output),
@@ -237,33 +306,52 @@ fn wraps<T>(term: &Term<T>, row: Line) -> bool {
         .contains(Flags::WRAPLINE)
 }
 
-/// Converts a grid point into an anchor.
-fn anchor_at<T>(term: &Term<T>, point: Point) -> Anchor {
+/// Walks up from `row` over the rows that wrap into it and returns the first
+/// row of its logical line, or `None` if that takes more than
+/// [`MAX_WALK_ROWS`] rows.
+fn first_row_of_line<T>(term: &Term<T>, mut row: i32) -> Option<i32> {
     let top = term.grid().topmost_line().0;
-    let columns = term.grid().columns();
-    let mut line = 0;
-    let mut rows_into_line = 0;
-    for row in top..point.line.0 {
-        if wraps(term, Line(row)) {
-            rows_into_line += 1;
-        } else {
-            line += 1;
-            rows_into_line = 0;
+    let mut steps = 0;
+    while row > top && wraps(term, Line(row - 1)) {
+        steps += 1;
+        if steps > MAX_WALK_ROWS {
+            return None;
         }
+        row -= 1;
     }
-    Anchor {
+    Some(row)
+}
+
+/// Converts a point on the screen into an anchor, given the number of
+/// logical lines in the scrollback above the screen. Costs a walk over the
+/// screen rows above the point plus at most [`MAX_WALK_ROWS`] rows.
+fn anchor_at<T>(term: &Term<T>, point: Point, history_lines: usize) -> Option<Anchor> {
+    let columns = term.grid().columns();
+    let line = history_lines
+        + (0..point.line.0)
+            .filter(|&row| !wraps(term, Line(row)))
+            .count();
+    let first = first_row_of_line(term, point.line.0)?;
+    let rows_into_line = (point.line.0 - first) as usize;
+    Some(Anchor {
         line,
         offset: rows_into_line * columns + point.column.0,
-    }
+    })
 }
 
 /// Converts an anchor back into a grid point, if it is still in the grid.
-fn point_of<T>(term: &Term<T>, anchor: Anchor) -> Option<Point> {
+///
+/// Anchors on the screen cost a walk over the screen; anchors in the
+/// scrollback cost a walk from its top, so this is only used for drawing,
+/// never in response to output.
+fn point_of<T>(term: &Term<T>, anchor: Anchor, history_lines: usize) -> Option<Point> {
     let grid = term.grid();
-    let columns = grid.columns();
     let bottom = grid.bottommost_line().0;
-    let mut line = 0;
-    let mut row = grid.topmost_line().0;
+    let (mut line, mut row) = if anchor.line >= history_lines {
+        (history_lines, 0)
+    } else {
+        (0, grid.topmost_line().0)
+    };
     while line < anchor.line {
         if row > bottom {
             return None;
@@ -273,8 +361,16 @@ fn point_of<T>(term: &Term<T>, anchor: Anchor) -> Option<Point> {
         }
         row += 1;
     }
-    // Walk down the wrapped rows of the logical line to the offset.
-    let mut offset = anchor.offset;
+    // On the screen, the logical line may have started in the scrollback.
+    let row = first_row_of_line(term, row)?;
+    offset_point(term, row, anchor.offset)
+}
+
+/// Returns the point `offset` cells into the logical line starting at `row`.
+fn offset_point<T>(term: &Term<T>, mut row: i32, mut offset: usize) -> Option<Point> {
+    let grid = term.grid();
+    let columns = grid.columns();
+    let bottom = grid.bottommost_line().0;
     while offset >= columns && row < bottom && wraps(term, Line(row)) {
         offset -= columns;
         row += 1;
@@ -282,9 +378,31 @@ fn point_of<T>(term: &Term<T>, anchor: Anchor) -> Option<Point> {
     (row <= bottom).then(|| Point::new(Line(row), Column(offset.min(columns - 1))))
 }
 
-/// Returns the text between two anchors, with trailing whitespace removed.
-fn text_between<T>(term: &Term<T>, start: Anchor, end: Anchor) -> String {
-    let (Some(start), Some(end)) = (point_of(term, start), point_of(term, end)) else {
+/// Returns the text from `start` up to `end`, the current cursor position,
+/// whose anchor is `end_anchor`, with surrounding whitespace removed.
+///
+/// The start is found by walking up from the cursor, at most
+/// [`MAX_COMMAND_ROWS`] rows; a longer command yields no text.
+fn text_before<T>(term: &Term<T>, start: Anchor, end: Point, end_anchor: Anchor) -> String {
+    if start.line > end_anchor.line {
+        return String::new();
+    }
+    let top = term.grid().topmost_line().0;
+    // Walk up to the first row of the start's logical line.
+    let mut row = end.line.0;
+    let mut line = end_anchor.line;
+    let mut steps = 0;
+    while line > start.line || (row > top && wraps(term, Line(row - 1))) {
+        if row <= top || steps >= MAX_COMMAND_ROWS {
+            return String::new();
+        }
+        row -= 1;
+        steps += 1;
+        if !wraps(term, Line(row)) {
+            line -= 1;
+        }
+    }
+    let Some(start) = offset_point(term, row, start.offset) else {
         return String::new();
     };
     if end <= start {
@@ -387,7 +505,8 @@ mod tests {
 
     #[test]
     fn follows_history_trimming() {
-        let flood = "line\r\n".repeat(crate::terminal::HISTORY_LINES + 500);
+        let lines = crate::terminal::HISTORY_LINES + crate::terminal::TRIM_SLACK + 500;
+        let flood = "line\r\n".repeat(lines);
         let mut output = run("flood", &flood, 0);
         output.push_str(&format!("last\r\n{C}done\r\n{}{A}$ {B}", d(0)));
         let term = terminal(5, 20, &output);
@@ -408,6 +527,72 @@ mod tests {
 
         term.advance(b"\x1b[H\x1b[2J\x1b[3J");
         assert!(term.blocks().is_empty());
+    }
+
+    /// Any program can print marks, so a flood of them must stay cheap even
+    /// with a full scrollback. Each mark used to walk the whole history.
+    #[test]
+    fn a_flood_of_marks_stays_cheap() {
+        let mut term = Terminal::new(TerminalSize::new(24, 80));
+        term.advance("line\r\n".repeat(crate::terminal::HISTORY_LINES).as_bytes());
+        let flood = format!("{A}$ {B}x\r\n{C}").repeat(20_000);
+
+        let start = std::time::Instant::now();
+        term.advance(flood.as_bytes());
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "60,000 marks took {elapsed:?}"
+        );
+        assert!(term.blocks().len() <= MAX_BLOCKS);
+    }
+
+    /// Clearing the history and refilling it within one read used to go
+    /// unnoticed, leaving block positions out of step with the grid until a
+    /// later trim subtracted past zero.
+    #[test]
+    fn clearing_and_refilling_the_history_at_once_is_noticed() {
+        for clear in ["\x1b[3J", "\x1bc"] {
+            let mut term = terminal(5, 2, &"\r\n".repeat(300));
+            term.advance(format!("{clear}{}{}", "x".repeat(700), "\r\n".repeat(10)).as_bytes());
+            term.advance(format!("{A}$ {B}").as_bytes());
+            term.resize(TerminalSize::new(5, 3));
+            term.advance(format!("c\r\n{C}").as_bytes());
+            term.advance(format!("{}\r\n{}", "x".repeat(300), "x".repeat(39_000)).as_bytes());
+
+            for block in term.blocks() {
+                let rows = term.block_rows(block);
+                if let Some(rows) = rows {
+                    assert!(rows.output.is_none_or(|output| output >= rows.prompt));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_mark_deep_inside_a_wrapped_line_is_ignored() {
+        let rows = MAX_WALK_ROWS as usize + 10;
+        let long = "x".repeat(20 * rows);
+        let term = terminal(5, 20, &format!("{long}{A}$ {B}"));
+
+        assert!(term.blocks().is_empty());
+    }
+
+    #[test]
+    fn blocks_survive_a_resize_behind_a_full_screen_program() {
+        // Long lines in the scrollback, which the resize reflows unseen.
+        let long = format!("{}\r\n", "x".repeat(25)).repeat(5);
+        let mut term = terminal(6, 10, &run("cmd", &long, 0));
+        assert!(term.history_size() > 0);
+        term.advance(b"\x1b[?1049h");
+        term.resize(TerminalSize::new(6, 30));
+        term.advance(b"\x1b[?1049l");
+
+        assert_eq!(term.blocks().len(), 2);
+        let rows = term.block_rows(&term.blocks()[1]).expect("rows");
+        let screen_row = rows.prompt - (term.history_size() - term.scroll_offset());
+        assert_eq!(term.screen_lines()[screen_row], "$");
     }
 
     #[test]

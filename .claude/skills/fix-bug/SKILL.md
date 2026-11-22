@@ -15,7 +15,8 @@ A bug is fixed when a test proves it cannot come back ([ADR 0012](../../../docs/
 ## 2. Reproduce with a failing test
 
 - Write the smallest test that shows the bug, at the lowest layer where it occurs: a unit test in `woop-term` for parsing, blocks or input encoding; an end-to-end test in `tests/` when a real process is needed.
-- Run it and **see it fail** for the reason you expect. A test that has never failed proves nothing.
+- Run it and **see it fail** for the reason you expect. A test that has never failed proves nothing. Make sure it builds the state the bug needs: a test of history reflow with an empty history passes with or without the fix.
+- When the fix is already written (for example, a fix found during review), disable it temporarily and confirm the test fails, then restore it.
 - If it cannot be reproduced automatically (rendering, a window event), say so, reproduce it by hand with the user (see "Manual testing" in `AGENTS.md`), and add temporary logging rather than guessing. Remove the logging afterwards.
 
 ## 3. Find the root cause

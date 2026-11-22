@@ -22,6 +22,7 @@ What matters to users, in order:
 
 - Allocations per byte, per cell or per frame (`String`, `Vec`, `clone`, `format!`), especially inside loops over the grid.
 - Work that is linear in the scrollback or the screen per event (per mark, per key, per frame) and becomes quadratic under load.
+- Calls into dependencies whose cost is hidden or depends on the size of the request: read their implementation. For example, trimming the emulator's scrollback only adjusts a length for up to 1,000 rows, but beyond that it rotates and reallocates the whole scrollback: batches must stay below that size.
 - Redrawing or re-snapshotting more than changed; cache invalidation that is too broad.
 - Locks, blocking calls or syscalls on the UI thread; busy loops; timers that wake an idle process.
 - Unbounded growth (also a security issue: report it as such).

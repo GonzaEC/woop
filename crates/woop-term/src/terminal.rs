@@ -9,11 +9,11 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::{Config, TermMode};
+use alacritty_terminal::term::{Config, Osc52, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 
 use crate::blocks::{self, Block, BlockList, BlockRows};
-use crate::marks::MarkScanner;
+use crate::marks::{Mark, MarkScanner};
 use crate::screen::Screen;
 use crate::selection::{SelectionKind, SelectionPoint};
 
@@ -76,8 +76,6 @@ pub enum TerminalEvent {
     ResetTitle,
     /// The application rang the bell.
     Bell,
-    /// The application asked to copy text to the clipboard.
-    ClipboardStore(String),
     /// Bytes that must be written back to the process, such as the answer
     /// to a cursor position query.
     Reply(String),
@@ -92,10 +90,9 @@ pub(crate) struct EventProxy {
 impl EventListener for EventProxy {
     fn send_event(&self, event: Event) {
         let event = match event {
-            Event::Title(title) => TerminalEvent::Title(title),
+            Event::Title(title) => TerminalEvent::Title(sanitize_title(&title)),
             Event::ResetTitle => TerminalEvent::ResetTitle,
             Event::Bell => TerminalEvent::Bell,
-            Event::ClipboardStore(_, text) => TerminalEvent::ClipboardStore(text),
             Event::PtyWrite(text) => TerminalEvent::Reply(text),
             _ => return,
         };
@@ -103,6 +100,16 @@ impl EventListener for EventProxy {
         // happens during teardown and can be ignored.
         let _ = self.sender.send(event);
     }
+}
+
+/// Removes control characters from a title set by a program and limits its
+/// length: the title reaches the operating system's window decorations.
+fn sanitize_title(title: &str) -> String {
+    title
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(MAX_TITLE_CHARS)
+        .collect()
 }
 
 /// Emulated terminal screen.
@@ -118,23 +125,47 @@ pub struct Terminal {
     blocks: BlockList,
     /// History size after the last update, to notice when it is cleared.
     history: usize,
+    /// The window was resized while the alternate screen was shown, so the
+    /// hidden scrollback was reflowed and must be recounted.
+    reflowed_unseen: bool,
 }
 
-/// Lines of scrollback kept.
+/// Lines of scrollback kept, at least.
 pub(crate) const HISTORY_LINES: usize = 10_000;
 
+/// Longest window title accepted from a program, in characters.
+const MAX_TITLE_CHARS: usize = 256;
+
+/// The history may grow this many lines past [`HISTORY_LINES`] before it is
+/// trimmed back. Each trim also moves every block up, which costs a pass
+/// over the block list, so trims are batched. The batch stays below the
+/// emulator's cache of 1,000 spare rows: larger trims make it rotate and
+/// reallocate the whole scrollback (measured: up to 68% slower output and
+/// 30% more memory with a slack of 2,048).
+pub(crate) const TRIM_SLACK: usize = 400;
+
 /// Output is fed to the emulator in pieces of at most this many bytes, and
-/// the history is trimmed back to [`HISTORY_LINES`] after each one. A byte
-/// adds at most one line, so the emulator never drops history lines on its
-/// own and block positions can be adjusted exactly.
+/// the history is checked after each one. Text adds at most one line per
+/// byte, so with a limit of [`HISTORY_LINES`] + [`TRIM_SLACK`] + `FEED_CHUNK`
+/// the emulator normally never drops history lines on its own and Woop knows
+/// exactly how many it removed. Sequences that scroll many lines at once can
+/// exceed that; the limit check in `update_history` then notices and forgets
+/// the blocks.
 const FEED_CHUNK: usize = 1024;
+
+/// History limit given to the emulator.
+const EMULATOR_HISTORY: usize = HISTORY_LINES + TRIM_SLACK + FEED_CHUNK;
 
 impl Terminal {
     /// Creates an empty terminal of the given size.
     pub fn new(size: TerminalSize) -> Self {
         let (sender, events) = mpsc::channel();
         let config = Config {
-            scrolling_history: HISTORY_LINES + FEED_CHUNK,
+            scrolling_history: EMULATOR_HISTORY,
+            // Programs may not read or write the clipboard (OSC 52): output
+            // is untrusted, and a program that sets the clipboard decides
+            // what the user pastes next. See ADR 0012.
+            osc52: Osc52::Disabled,
             ..Config::default()
         };
         let term = Term::new(config, &size, EventProxy { sender });
@@ -146,6 +177,7 @@ impl Terminal {
             marks: MarkScanner::default(),
             blocks: BlockList::default(),
             history: 0,
+            reflowed_unseen: false,
         }
     }
 
@@ -155,14 +187,35 @@ impl Terminal {
         let mut start = 0;
         for (end, mark) in self.marks.scan(bytes) {
             self.feed(&bytes[start..end]);
-            // Full-screen applications do not emit marks, and the alternate
-            // screen has no history for blocks to live in.
-            if !self.term.mode().contains(TermMode::ALT_SCREEN) {
+            let alt_screen = self.term.mode().contains(TermMode::ALT_SCREEN);
+            if mark == Mark::SequenceTooLong {
+                // CAN cancels the sequence in the emulator, which would
+                // otherwise keep buffering it for as long as output goes on.
+                self.parser.advance(&mut self.term, &[0x18]);
+            } else if mark == Mark::HistoryCleared {
+                self.history_cleared(alt_screen);
+            } else if !alt_screen {
+                // Full-screen applications do not emit marks, and the
+                // alternate screen has no history for blocks to live in.
                 self.blocks.apply(mark, &self.term, now);
             }
             start = end;
         }
         self.feed(&bytes[start..]);
+    }
+
+    /// Forgets blocks after the output cleared the scrollback. The clear is
+    /// detected in the stream itself, so it is noticed even when more output
+    /// in the same read refills the history.
+    fn history_cleared(&mut self, alt_screen: bool) {
+        self.blocks.clear();
+        if alt_screen {
+            // The main screen's history is hidden; recount it on return.
+            self.reflowed_unseen = true;
+        } else {
+            self.blocks.recount_history(&self.term);
+            self.history = self.term.grid().history_size();
+        }
     }
 
     fn feed(&mut self, bytes: &[u8]) {
@@ -172,26 +225,37 @@ impl Terminal {
         }
     }
 
-    /// Trims the history to [`HISTORY_LINES`] and keeps block positions in
+    /// Trims the history back to [`HISTORY_LINES`] once it exceeds the slack,
+    /// and keeps block positions in
     /// step with it.
     fn update_history(&mut self, resized: bool) {
         if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            // The scrollback is hidden, but a resize still reflows it; catch
+            // up once the alternate screen is closed.
+            self.reflowed_unseen |= resized;
             return;
         }
+        let reflowed = resized || std::mem::take(&mut self.reflowed_unseen);
         let history = self.term.grid().history_size();
         // The history only shrinks on its own when it is cleared (or when a
         // resize pulls lines back onto the screen), and it only reaches the
         // emulator's limit if lines may have been dropped without notice.
         // Either way, block positions can no longer be trusted.
-        if (!resized && history < self.history) || history >= HISTORY_LINES + FEED_CHUNK {
+        let lost = (!reflowed && history < self.history) || history >= EMULATOR_HISTORY;
+        if lost {
             self.blocks.clear();
         }
-        if history > HISTORY_LINES {
+        if reflowed || lost {
+            self.blocks.recount_history(&self.term);
+        } else if history > self.history {
+            self.blocks.history_grew(&self.term, history - self.history);
+        }
+        if history > HISTORY_LINES + TRIM_SLACK {
             let excess = history - HISTORY_LINES;
             let removed = blocks::line_starts_in_top_rows(&self.term, excess);
             let grid = self.term.grid_mut();
             grid.update_history(HISTORY_LINES);
-            grid.update_history(HISTORY_LINES + FEED_CHUNK);
+            grid.update_history(EMULATOR_HISTORY);
             self.blocks.remove_top_lines(removed);
         }
         self.history = self.term.grid().history_size();
@@ -218,7 +282,7 @@ impl Terminal {
         if self.term.mode().contains(TermMode::ALT_SCREEN) {
             return None;
         }
-        BlockList::rows(&self.term, block)
+        self.blocks.rows(&self.term, block)
     }
 
     /// Number of lines in the scrollback above the screen. Together with
@@ -467,6 +531,43 @@ mod tests {
             term.take_events(),
             [TerminalEvent::Reply("\x1b[3;4R".into())]
         );
+    }
+
+    #[test]
+    fn an_endless_sequence_is_cut_off() {
+        // The parser buffers OSC payloads without limit; an unterminated
+        // one would grow memory for as long as the output continues.
+        let mut term = terminal(3, 20);
+        let endless = format!("\x1b]0;{}", "x".repeat(200 * 1024));
+        term.advance(endless.as_bytes());
+        term.advance(b"\r\nvisible");
+
+        assert!(term.screen_text().contains("visible"));
+    }
+
+    #[test]
+    fn window_titles_are_bounded_and_printable() {
+        let mut term = terminal(2, 10);
+        let long = "t".repeat(10_000);
+        term.advance(format!("\x1b]0;a\x7fb\u{9b}c{long}\x07").as_bytes());
+
+        let events = term.take_events();
+        let [TerminalEvent::Title(title)] = events.as_slice() else {
+            panic!("expected one title, got {events:?}");
+        };
+        assert!(title.starts_with("abc"));
+        assert_eq!(title.chars().count(), MAX_TITLE_CHARS);
+        assert!(!title.chars().any(char::is_control));
+    }
+
+    #[test]
+    fn programs_cannot_use_the_clipboard() {
+        // OSC 52 would let any output (a file being displayed, a remote
+        // host) replace what the user pastes next, or read it.
+        let mut term = terminal(2, 10);
+        term.advance(b"\x1b]52;c;cm0gLXJmIH4K\x07\x1b]52;c;?\x07");
+
+        assert_eq!(term.take_events(), []);
     }
 
     #[test]
