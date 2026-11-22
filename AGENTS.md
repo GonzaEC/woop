@@ -16,13 +16,14 @@ Judge every change in this order; when two conflict, the earlier one wins, and a
 
 1. **Security is paramount.** A terminal runs the user's shell and displays output from untrusted sources (files, remote machines).
    - Treat program output as untrusted input. Anything that lets output act beyond drawing text (clipboard writes, replies containing data, links, files) is off by default or needs an explicit user action, and is bounded in size.
+   - Code that reads output before the emulator (the mark scanner in `woop-term`) must interpret it exactly as the emulator's parser does, checked against the parser's source; any difference lets crafted output slip past it. Test the variants: control characters, DEL and high bytes inside a sequence, numeric parameters, split reads.
    - Never type anything into the shell that the user did not, except the standard replies needed to run (cursor position, device attributes). Pasted text must not carry control sequences.
    - Bound every buffer, channel and history fed by program output.
    - No `unsafe` without an ADR. Write files only to the user's own directories, with permissions that keep other users out. No network access except user-configured AI providers. Never log or store secrets.
    - Every new dependency needs a reason and an evaluation (maintenance, vulnerabilities, licence, `unsafe`, cost); see the [`add-dependency`](.claude/skills/add-dependency/SKILL.md) skill. Prefer the standard library and well-maintained crates.
    - `deny.toml`, `.github/workflows/` and `.github/dependabot.yml` are security controls: changing them is a security change. When a new advisory makes the dependency check fail, upgrade the crate; if that is impossible (the fix must come from upstream), add the advisory to `ignore` in `deny.toml` with how the crate reaches Woop and why the risk is acceptable, after a security review. Never weaken the policy to make CI pass.
 2. **Tests, so nothing breaks.** Every behaviour change has tests; every bug fix starts with a test that fails without it (see the [`fix-bug`](.claude/skills/fix-bug/SKILL.md) skill). Code that parses untrusted input must never panic or hang on arbitrary bytes, and has tests that prove it.
-3. **Performance.** Keep the read, parse and draw paths free of per-byte or per-cell allocations, locks and blocking calls, and do no work while the shell is idle. Changes to hot paths include measurements from release builds.
+3. **Performance.** Keep the read, parse and draw paths free of per-byte or per-cell allocations, locks and blocking calls, and do no work while the shell is idle. Work triggered by output costs at most a walk over the screen, never over the scrollback: an attacker controls how often it happens. Check what a dependency's call really costs, in its source, before using it on a hot path or changing how often it runs (trimming the emulator's scrollback is cheap in small steps but rotates and reallocates all of it beyond 1,000 rows). Changes to hot paths include before-and-after measurements from release builds; reasoning alone has been wrong here before.
 
 ## Commands
 

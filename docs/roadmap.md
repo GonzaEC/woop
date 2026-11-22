@@ -7,8 +7,9 @@ Each milestone produces something that can be built, run and tested.
 Security, tests and performance come before new features ([ADR 0012](adr/0012-security-tests-performance-priorities.md)). This work runs alongside the milestones and takes precedence over them.
 
 - [x] **Security baseline.** `unsafe` forbidden across the workspace; dependency audit in CI (known vulnerabilities, licences, sources); automated dependency updates; read-only CI permissions.
-- [ ] **Security hardening.** Clipboard writes from programs (OSC 52) off by default; bounded channel between the output reader and the window; shell integration files readable only by their owner; block tracking that stays cheap when a program floods shell integration marks (each mark currently walks the scrollback).
+- [x] **Security hardening.** Programs cannot use the clipboard (OSC 52); bounded queue and bounded work per pump between the output reader and the window; shell integration files private to their owner; block tracking that stays cheap under a flood of marks ([ADR 0013](adr/0013-bound-the-cost-of-program-output.md)).
 - [ ] **Robustness tests.** Property-based tests showing that the emulator, the mark scanner and the input encoders never panic or hang on arbitrary input.
+- [ ] **Replies off the interface thread.** Answers to terminal queries are written synchronously when output is pumped; limit their volume per pump or write them from another thread, so a flood of queries to a program that does not read its input cannot stall the window.
 - [ ] **Benchmarks.** Measured throughput of parsing and snapshotting, startup time and memory use in release builds, tracked over time.
 
 ## Milestones

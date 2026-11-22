@@ -1,6 +1,6 @@
 # 0011. Shell integration marks and command blocks anchored to logical lines
 
-- **Status:** Accepted
+- **Status:** Accepted; history trimming refined by [0013](0013-bound-the-cost-of-program-output.md)
 - **Date:** 2026-11-21
 
 ## Context

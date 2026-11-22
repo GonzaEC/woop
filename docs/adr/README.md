@@ -31,3 +31,4 @@ Start from [the template](template.md) and add the record to the index below in 
 | [0010](0010-screen-snapshots-and-wakeups.md) | Render from screen snapshots, woken by output notifications | Accepted |
 | [0011](0011-shell-integration-and-command-blocks.md) | Shell integration marks and command blocks anchored to logical lines | Accepted |
 | [0012](0012-security-tests-performance-priorities.md) | Put security first, then tests, then performance | Accepted |
+| [0013](0013-bound-the-cost-of-program-output.md) | Bound the cost and the reach of program output | Accepted |
