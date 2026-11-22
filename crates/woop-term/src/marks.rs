@@ -31,9 +31,6 @@ pub(crate) enum Mark {
 /// marks and are skipped.
 const MAX_PAYLOAD: usize = 256;
 
-/// Longest CSI parameter list the scanner buffers; only `3` matters.
-const MAX_CSI_PARAMS: usize = 16;
-
 /// Longest OSC sequence allowed to reach the emulator. Legitimate ones
 /// (titles, links, marks) are far shorter.
 pub(crate) const MAX_OSC_BYTES: usize = 64 * 1024;
@@ -69,6 +66,13 @@ pub(crate) struct MarkScanner {
     payload: Vec<u8>,
     /// Length of the OSC being skipped so far.
     osc_len: usize,
+    /// Value of the first CSI parameter, as the emulator computes it.
+    csi_first: u16,
+    /// The first CSI parameter has ended (`;` or `:` was seen).
+    csi_after_first: bool,
+    /// The CSI has a private marker or an intermediate byte, so it is not a
+    /// plain erase command.
+    csi_other: bool,
 }
 
 impl Default for MarkScanner {
@@ -77,8 +81,17 @@ impl Default for MarkScanner {
             state: State::Ground,
             payload: Vec::with_capacity(MAX_PAYLOAD),
             osc_len: 0,
+            csi_first: 0,
+            csi_after_first: false,
+            csi_other: false,
         }
     }
+}
+
+/// Whether the emulator executes `byte` inside an escape sequence without
+/// leaving it: C0 controls other than CAN, SUB and ESC.
+fn executes_in_escape(byte: u8) -> bool {
+    matches!(byte, 0x00..=0x17 | 0x19 | 0x1c..=0x1f)
 }
 
 impl MarkScanner {
@@ -98,31 +111,50 @@ impl MarkScanner {
                     State::Osc
                 }
                 (State::Escape | State::OscEscape | State::SkipEscape, b'[') => {
-                    self.payload.clear();
+                    self.csi_first = 0;
+                    self.csi_after_first = false;
+                    self.csi_other = false;
                     State::Csi
                 }
                 (State::Escape | State::OscEscape | State::SkipEscape, b'c') => {
                     marks.push((index + 1, Mark::HistoryCleared));
                     State::Ground
                 }
-                (State::Escape, ESC) => State::Escape,
+                // C0 controls are executed inside an escape sequence without
+                // ending it; the emulator keeps waiting for the rest.
+                (State::Escape | State::OscEscape | State::SkipEscape, ESC) => State::Escape,
+                (State::Escape | State::OscEscape | State::SkipEscape, _)
+                    if executes_in_escape(byte) =>
+                {
+                    State::Escape
+                }
                 (State::Escape, _) => State::Ground,
                 (State::Csi, CAN | SUB) => State::Ground,
                 (State::Csi, ESC) => State::Escape,
                 (State::Csi, 0x40..=0x7e) => {
-                    if byte == b'J' && self.payload == b"3" {
+                    // Only the first parameter counts, as a number: `3J`,
+                    // `03J`, `3;J` and `3:1J` all erase the scrollback.
+                    if byte == b'J' && !self.csi_other && self.csi_first == 3 {
                         marks.push((index + 1, Mark::HistoryCleared));
                     }
                     State::Ground
                 }
-                (State::Csi, 0x20..=0x3f) => {
-                    if self.payload.len() < MAX_CSI_PARAMS {
-                        self.payload.push(byte);
-                    } else {
-                        // Too long to be `3`; make sure it cannot match.
-                        self.payload.clear();
-                        self.payload.push(b'x');
+                (State::Csi, b'0'..=b'9') => {
+                    if !self.csi_after_first {
+                        self.csi_first = self
+                            .csi_first
+                            .saturating_mul(10)
+                            .saturating_add(u16::from(byte - b'0'));
                     }
+                    State::Csi
+                }
+                (State::Csi, b';' | b':') => {
+                    self.csi_after_first = true;
+                    State::Csi
+                }
+                // Private markers (`<`, `=`, `>`, `?`) and intermediates.
+                (State::Csi, 0x20..=0x3f) => {
+                    self.csi_other = true;
                     State::Csi
                 }
                 // Other control characters are executed without ending the
@@ -150,7 +182,6 @@ impl MarkScanner {
                     }
                     State::Ground
                 }
-                (State::OscEscape, ESC) | (State::SkipEscape, ESC) => State::Escape,
                 (State::OscEscape, _) => State::Ground,
                 (State::Skip, BEL) => State::Ground,
                 (State::Skip, ESC) => State::SkipEscape,
@@ -277,9 +308,31 @@ mod tests {
     #[test]
     fn other_erase_sequences_are_not_history_clears() {
         // Erasing the screen keeps the scrollback.
-        assert_eq!(scan(&[b"\x1b[2J\x1b[J\x1b[13J\x1b[?3J\x1b[3K"]), [vec![]]);
-        let long = format!("\x1b[{}3J", "0".repeat(MAX_CSI_PARAMS + 5));
-        assert_eq!(scan(&[long.as_bytes()]), [vec![]]);
+        assert_eq!(
+            scan(&[b"\x1b[2J\x1b[J\x1b[13J\x1b[?3J\x1b[3$J\x1b[;3J\x1b[3K"]),
+            [vec![]]
+        );
+    }
+
+    #[test]
+    fn history_clears_are_read_like_the_emulator_reads_them() {
+        // The first parameter is a number, and control characters inside a
+        // sequence do not end it.
+        let zeros = format!("\x1b[{}3J", "0".repeat(40));
+        for sequence in [
+            zeros.as_bytes(),
+            b"\x1b[3;J",
+            b"\x1b[3:1J",
+            b"\x1b\x00c",
+            b"\x1b\r[3J",
+            b"\x1b[\r3J",
+        ] {
+            assert_eq!(
+                scan(&[sequence]),
+                [vec![(sequence.len(), Mark::HistoryCleared)]],
+                "{sequence:?}"
+            );
+        }
     }
 
     #[test]

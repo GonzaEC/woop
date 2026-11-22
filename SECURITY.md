@@ -18,7 +18,8 @@ Security is Woop's first priority ([ADR 0012](docs/adr/0012-security-tests-perfo
   - programs cannot read or write the clipboard;
   - output waits in a bounded queue, so a program that floods the terminal slows itself down instead of exhausting memory or freezing the window;
   - shell integration marks cost bounded work, whatever a program prints;
-  - escape sequences that never end are cut off, and window titles are limited in length and stripped of control characters.
+  - escape sequences that never end are cut off, and output can never be held back from the screen;
+  - window titles are limited in length and stripped of control and invisible formatting characters.
 - Pasted text cannot carry escape sequences that end bracketed paste.
 - Shell integration files are private to the user on Unix.
 - Woop's own code contains no `unsafe`; the compiler rejects it across the workspace.

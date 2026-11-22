@@ -553,11 +553,34 @@ mod tests {
     /// later trim subtracted past zero.
     #[test]
     fn clearing_and_refilling_the_history_at_once_is_noticed() {
-        for clear in ["\x1b[3J", "\x1bc"] {
+        // Every form the emulator accepts: control characters inside the
+        // escape sequence are executed without ending it, and only the first
+        // parameter of `CSI J` counts.
+        for clear in [
+            "\x1b[3J",
+            "\x1bc",
+            "\x1b\x00c",
+            "\x1b\r[3J",
+            "\x1b[03J",
+            "\x1b[3;J",
+            "\x1b[3:1J",
+            "\x1b[?2026h\x1b[3J",
+        ] {
             let mut term = terminal(5, 2, &"\r\n".repeat(300));
             term.advance(format!("{clear}{}{}", "x".repeat(700), "\r\n".repeat(10)).as_bytes());
             term.advance(format!("{A}$ {B}").as_bytes());
+
+            // The prompt is anchored where it really is, also after a resize
+            // recounts the history from scratch.
+            let prompt_line = |term: &Terminal| {
+                let block = term.blocks().last()?;
+                let rows = term.block_rows(block)?;
+                let row = rows.prompt.checked_sub(term.history_size())?;
+                term.screen_lines().get(row).cloned()
+            };
+            assert_eq!(prompt_line(&term).as_deref(), Some("$"), "{clear:?}");
             term.resize(TerminalSize::new(5, 3));
+            assert_eq!(prompt_line(&term).as_deref(), Some("$"), "{clear:?}");
             term.advance(format!("c\r\n{C}").as_bytes());
             term.advance(format!("{}\r\n{}", "x".repeat(300), "x".repeat(39_000)).as_bytes());
 

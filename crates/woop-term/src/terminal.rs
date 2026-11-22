@@ -10,7 +10,7 @@ use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::{Config, Osc52, TermMode};
-use alacritty_terminal::vte::ansi::Processor;
+use alacritty_terminal::vte::ansi::{Processor, Timeout};
 
 use crate::blocks::{self, Block, BlockList, BlockRows};
 use crate::marks::{Mark, MarkScanner};
@@ -107,9 +107,19 @@ impl EventListener for EventProxy {
 fn sanitize_title(title: &str) -> String {
     title
         .chars()
-        .filter(|ch| !ch.is_control())
+        .filter(|&ch| !ch.is_control() && !is_invisible_format(ch))
         .take(MAX_TITLE_CHARS)
         .collect()
+}
+
+/// Invisible formatting characters that can make a title read differently
+/// from what it contains: bidirectional overrides and isolates, zero-width
+/// characters and the byte order mark.
+fn is_invisible_format(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}'
+    )
 }
 
 /// Emulated terminal screen.
@@ -221,6 +231,14 @@ impl Terminal {
     fn feed(&mut self, bytes: &[u8]) {
         for piece in bytes.chunks(FEED_CHUNK) {
             self.parser.advance(&mut self.term, piece);
+            // Synchronized updates (mode 2026) make the parser hold output
+            // back until the program ends them, which a hostile program never
+            // does. Woop draws once per pump anyway, so any update is ended
+            // right away: output, marks and clears are then applied in the
+            // order they arrive.
+            if self.parser.sync_timeout().pending_timeout() {
+                self.parser.stop_sync(&mut self.term);
+            }
             self.update_history(false);
         }
     }
@@ -536,11 +554,24 @@ mod tests {
     #[test]
     fn an_endless_sequence_is_cut_off() {
         // The parser buffers OSC payloads without limit; an unterminated
-        // one would grow memory for as long as the output continues.
+        // one would grow memory for as long as the output continues. A
+        // control character between ESC and `]` must not hide it.
+        for start in ["\x1b]0;", "\x1b\x00]0;", "\x1b\r]0;"] {
+            let mut term = terminal(3, 20);
+            let endless = format!("{start}{}", "x".repeat(200 * 1024));
+            term.advance(endless.as_bytes());
+            term.advance(b"\r\nvisible");
+
+            assert!(term.screen_text().contains("visible"), "{start:?}");
+        }
+    }
+
+    #[test]
+    fn output_is_never_held_back() {
+        // A synchronized update that never ends would hide all further
+        // output, including what the user types.
         let mut term = terminal(3, 20);
-        let endless = format!("\x1b]0;{}", "x".repeat(200 * 1024));
-        term.advance(endless.as_bytes());
-        term.advance(b"\r\nvisible");
+        term.advance(b"\x1b[?2026hvisible");
 
         assert!(term.screen_text().contains("visible"));
     }
@@ -549,7 +580,7 @@ mod tests {
     fn window_titles_are_bounded_and_printable() {
         let mut term = terminal(2, 10);
         let long = "t".repeat(10_000);
-        term.advance(format!("\x1b]0;a\x7fb\u{9b}c{long}\x07").as_bytes());
+        term.advance(format!("\x1b]0;a\x7fb\u{9b}\u{202e}\u{200b}c{long}\x07").as_bytes());
 
         let events = term.take_events();
         let [TerminalEvent::Title(title)] = events.as_slice() else {
