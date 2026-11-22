@@ -20,6 +20,8 @@ If `Cargo.toml`, `Cargo.lock` or `deny.toml` changed, also run `cargo deny check
 - If formatting fails, run `cargo fmt --all` and re-check.
 - If clippy fails, fix the code. Do not silence a lint with `#[allow]` unless there is a clear reason, stated in a comment next to it.
 - If a test fails, find the cause. Never weaken or delete a test to make it pass. A test that fails only sometimes is a bug in the test or the code, not noise.
+- If the change touches `woop-term` parsing, input, paste or block tracking, also run the robustness properties for longer, in debug and release: `PROPTEST_CASES=4000 cargo test -p woop-term --test robustness` and `PROPTEST_CASES=20000 cargo test --release -p woop-term --test robustness`. A failure prints a minimal input: turn it into a regression test before fixing it.
+- Do not commit `*.proptest-regressions` files from experiments; regressions become named tests instead.
 - On Windows, if `rustc` crashes with `STATUS_STACK_BUFFER_OVERRUN` while compiling a dependency, rerun with `RUST_MIN_STACK=67108864`.
 
 ## 2. Review the diff against the project rules

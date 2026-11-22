@@ -20,7 +20,8 @@ Security is Woop's first priority ([ADR 0012](docs/adr/0012-security-tests-perfo
   - shell integration marks cost bounded work, whatever a program prints;
   - escape sequences that never end are cut off, and output can never be held back from the screen;
   - window titles are limited in length and stripped of control and invisible formatting characters.
-- Pasted text cannot carry escape sequences that end bracketed paste.
+- Pasted text keeps only printable characters, tabs and line breaks, so hidden control characters or escape sequences in copied text cannot act as keys.
+- Property-based tests feed the terminal, the mark scanner and the input encoders arbitrary input on every CI run ([ADR 0014](docs/adr/0014-property-based-robustness-tests.md)).
 - Shell integration files are private to the user on Unix.
 - Woop's own code contains no `unsafe`; the compiler rejects it across the workspace.
 - Every pull request, and a weekly scheduled run, checks all dependencies (direct and transitive) against the RustSec advisory database for vulnerabilities, unsound code, unmaintained crates and yanked versions, and checks their licences and sources, with the policy in [`deny.toml`](deny.toml). Accepted exceptions are listed there, each with its reason; today they all come from upstream crates that Woop cannot update on its own.

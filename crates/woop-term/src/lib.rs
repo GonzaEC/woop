@@ -22,5 +22,7 @@ pub use blocks::{Block, BlockRows, BlockState};
 pub use screen::{Cell, CellStyle, Color, Cursor, CursorShape, Screen};
 pub use selection::{SelectionKind, SelectionPoint};
 pub use session::Session;
-pub use terminal::{CursorPosition, Terminal, TerminalEvent, TerminalMode, TerminalSize};
+pub use terminal::{
+    CursorPosition, MIN_COLUMNS, Terminal, TerminalEvent, TerminalMode, TerminalSize,
+};
 pub use woop_pty::{ExitStatus, PtyError, ShellCommand};
