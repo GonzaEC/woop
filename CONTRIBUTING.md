@@ -13,6 +13,10 @@ Thank you for your interest in improving Woop. This guide explains how to set up
    cargo test --workspace
    ```
 
+   On Windows, if the compiler crashes with `STATUS_STACK_BUFFER_OVERRUN` while building a dependency, set `$env:RUST_MIN_STACK = 67108864` in PowerShell and build again.
+
+4. Run the application with `cargo run -p woop-app`. Changes to the window (rendering, keyboard, mouse, clipboard) should be tried by hand: automated tests do not cover them.
+
 ## Before opening a pull request
 
 Run the same checks as CI:

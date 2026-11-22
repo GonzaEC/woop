@@ -22,6 +22,12 @@ cargo run -p woop-term --example headless -- "echo hi" # run the core without a 
 
 Run `fmt`, `clippy` and `test` before declaring any change finished. These are exactly what CI checks.
 
+On Windows, if compiling a dependency crashes `rustc` with `STATUS_STACK_BUFFER_OVERRUN`, raise its stack size for that build: `RUST_MIN_STACK=67108864 cargo build` (PowerShell: `$env:RUST_MIN_STACK = 67108864`).
+
+### Manual testing
+
+Automated tests cannot judge how the window looks or feels (rendering, keyboard, mouse, clipboard). Run the app with `cargo run -p woop-app` and ask a person to try the change, listing what to check. Agents must not inject synthetic keyboard or mouse input into, or take screenshots of, a person's desktop without asking first: other windows may be in front and receive the input.
+
 ## Layout and boundaries
 
 | Crate | Responsibility | May depend on |
@@ -43,6 +49,18 @@ Run `fmt`, `clippy` and `test` before declaring any change finished. These are e
 - Platform-specific code goes behind `cfg` attributes and must keep all three platforms compiling.
 - Keep allocations and blocking calls off the render path.
 - Add tests with every behaviour change: unit tests next to the code, end-to-end tests in `tests/`. Prefer real processes over mocks for PTY behaviour.
+- Tests with real shells must not depend on timing. A shell may echo input before it prints its prompt, so match on content (for example, a line *ending* in the expected output) rather than on exact lines or order.
+- Tests run on all three platforms. Do not parse another platform's paths with `std::path`: on Unix, `Path` does not treat `\` as a separator.
+
+## Platform conventions
+
+- **Keyboard shortcuts** follow each platform (`keys::Shortcuts` in `woop-app`). Windows: Ctrl+C copies while text is selected and interrupts otherwise, Ctrl+V pastes. Linux: Ctrl+Shift+C and Ctrl+Shift+V, leaving Ctrl+C and Ctrl+V to the shell. macOS: Cmd+C and Cmd+V. A new shortcut must not take a key the shell needs on that platform.
+- **Shell integration** scripts live in `crates/woop-term/shell/` and are embedded in the binary ([ADR 0011](docs/adr/0011-shell-integration-and-command-blocks.md)). They:
+  - wrap the user's prompt and configuration, never replace them, and keep the last exit status visible to the user's prompt;
+  - keep LF line endings (`.gitattributes` enforces it);
+  - support the oldest shells Woop targets: Windows PowerShell 5.1 has no `` `e `` escape (use `[char]27`), and bash 3.2 (macOS) has no `PS0`, so commands are marked from the `DEBUG` trap, which does not fire for subshells such as `( ... )`.
+
+  `crates/woop-term/tests/shell_integration.rs` runs the scripts in real shells. When developing on Windows, the bash and zsh scripts are only exercised by CI; check its logs to confirm those tests ran.
 
 ## Decisions
 
@@ -61,3 +79,5 @@ The repository is public. Documentation, comments, commit messages and pull requ
 - Commit messages follow [Conventional Commits](https://www.conventionalcommits.org): `feat(term): ...`, `fix(pty): ...`, `docs: ...`.
 - Do not add tool-attribution trailers or footers (such as `Co-Authored-By` lines for AI tools, or "generated with" notes) to commits or pull requests. The person submitting a change is its author and is responsible for understanding and testing it.
 - Pull request descriptions use the template: a summary of what and why, and how it was tested on which platforms.
+- Commit and push only after the checks pass. Do not chain them after a check in a single shell command, where a failure would not stop the push.
+- Read a file before overwriting it, even configuration that seems new (`.gitattributes`, workflows).

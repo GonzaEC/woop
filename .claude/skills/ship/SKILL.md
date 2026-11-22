@@ -13,6 +13,8 @@ If on `main`, create a branch first, named `<type>/<short-topic>` (for example `
 
 Run the `verify` skill. Do not continue while any check fails, unless the user explicitly accepts it.
 
+Run the commit and push as separate steps after the checks have passed. Never chain them after a check in one shell command (`cargo test; git commit ...; git push`): a failing check would not stop the push, and a broken commit would reach the pull request.
+
 ## 3. Commit
 
 - Stage only files that belong to the change. Never commit `target/`, editor settings or secrets.
@@ -48,6 +50,10 @@ What was run and on which platforms; what only CI covers.
 
 No attribution footer in the body either.
 
-## 5. Report
+## 5. Follow CI
 
-Give the user the pull request link, what was verified locally, and what is left to CI.
+Wait for the checks (`gh pr checks <number> --watch`). If one fails, read the failing log (`gh run view <run-id> --log-failed`), fix the cause on the same branch and push again. When a test only runs on another platform (`#[cfg(unix)]`, a shell that is not installed locally), confirm in that job's log that it actually ran instead of being skipped.
+
+## 6. Report
+
+Give the user the pull request link, what was verified locally, what CI covered, and anything that still needs a person to try by hand (see "Manual testing" in `AGENTS.md`). Merge only when the user approves.
