@@ -154,6 +154,13 @@ impl canvas::Program<Message> for TerminalView<'_> {
                 ..
             }) => keys::key_press(key, *modifiers, text.as_deref(), self.keys)
                 .map(|action| Action::publish(Message::Key(action)).and_capture()),
+            // A right click pastes the clipboard, through the same path as
+            // the paste shortcut (control characters are removed).
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
+                if cursor.is_over(bounds) =>
+            {
+                Some(Action::publish(Message::Key(keys::KeyAction::Paste)).and_capture())
+            }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let position = cursor.position_in(bounds)?;
                 let point = self.selection_point(position);
