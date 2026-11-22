@@ -1,13 +1,13 @@
 //! A shell running in a pseudo-terminal, connected to a [`Terminal`].
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use woop_pty::{ExitStatus, Pty, Result, ShellCommand};
+use woop_pty::{ExitStatus, Pty, PtyError, Result, ShellCommand};
 
 use crate::terminal::{Terminal, TerminalEvent, TerminalSize};
 
@@ -27,7 +27,132 @@ const OUTPUT_QUEUE_CHUNKS: usize = 32;
 /// another notification.
 const BYTES_PER_PUMP: usize = 128 * 1024;
 
+/// Most input waiting for the process at once. Writes are done on a
+/// separate thread, because they block while the process is not reading;
+/// beyond this backlog, new input is refused instead of piling up.
+const MAX_PENDING_INPUT: usize = 16 * 1024 * 1024;
+
+/// Most bytes of replies to terminal queries written per pump. Replies are
+/// produced by program output, so a flood of queries must not turn into an
+/// unbounded amount of input; replies past the budget are dropped.
+const REPLY_BYTES_PER_PUMP: usize = 16 * 1024;
+
 type Notify = Arc<dyn Fn() + Send + Sync>;
+
+/// Input for the process, written by a dedicated thread so the owner never
+/// blocks on a process that does not read.
+struct InputQueue {
+    sender: mpsc::Sender<Vec<u8>>,
+    /// Memory held by queued input: its bytes plus [`CHUNK_OVERHEAD`] per
+    /// chunk.
+    pending: Arc<AtomicUsize>,
+    /// Set when the session closes: input still queued is then discarded,
+    /// never written, since the process it was meant for is gone and
+    /// whatever still reads the pseudo-terminal must not receive it.
+    closed: Arc<AtomicBool>,
+    /// Cleared when the writer thread stops because the input was closed.
+    alive: Arc<AtomicBool>,
+}
+
+/// Memory counted for each queued chunk besides its bytes, so that many
+/// tiny writes cannot hold far more memory than the backlog limit says.
+const CHUNK_OVERHEAD: usize = 64;
+
+/// Queued input is written in pieces of this size, checking between pieces
+/// whether the session was closed, so a long paste stops soon after.
+const WRITE_PIECE: usize = 4 * 1024;
+
+impl InputQueue {
+    fn start(mut writer: Box<dyn Write + Send>) -> std::io::Result<Self> {
+        let (sender, chunks) = mpsc::channel::<Vec<u8>>();
+        let pending = Arc::new(AtomicUsize::new(0));
+        let closed = Arc::new(AtomicBool::new(false));
+        let alive = Arc::new(AtomicBool::new(true));
+        let (written, stop, running) = (
+            Arc::clone(&pending),
+            Arc::clone(&closed),
+            Arc::clone(&alive),
+        );
+        thread::Builder::new()
+            .name("woop-pty-writer".into())
+            .spawn(move || {
+                // Ends when the session is dropped (the channel closes) or the
+                // process input is closed (a write fails). A write the
+                // process never reads still blocks until it exits.
+                'chunks: for chunk in chunks {
+                    written.fetch_sub(chunk.len() + CHUNK_OVERHEAD, Ordering::AcqRel);
+                    for piece in chunk.chunks(WRITE_PIECE) {
+                        if stop.load(Ordering::Acquire) {
+                            continue 'chunks;
+                        }
+                        if writer
+                            .write_all(piece)
+                            .and_then(|()| writer.flush())
+                            .is_err()
+                        {
+                            break 'chunks;
+                        }
+                    }
+                }
+                running.store(false, Ordering::Release);
+            })?;
+        Ok(Self {
+            sender,
+            pending,
+            closed,
+            alive,
+        })
+    }
+
+    /// Queues `bytes` without blocking, or refuses them if the backlog is
+    /// full or the process input is closed.
+    fn send(&self, bytes: &[u8]) -> Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        if !self.alive.load(Ordering::Acquire) {
+            return Err(PtyError::Stream("the process input is closed".into()));
+        }
+        let cost = bytes.len() + CHUNK_OVERHEAD;
+        let before = self.pending.fetch_add(cost, Ordering::AcqRel);
+        if before + cost > MAX_PENDING_INPUT {
+            self.pending.fetch_sub(cost, Ordering::AcqRel);
+            return Err(PtyError::InputBacklog(bytes.len()));
+        }
+        self.sender.send(bytes.to_vec()).map_err(|_| {
+            self.pending.fetch_sub(cost, Ordering::AcqRel);
+            PtyError::Stream("the process input is closed".into())
+        })
+    }
+
+    /// Discards input that is still queued instead of writing it.
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+    }
+}
+
+/// Separates replies from other events, keeping at most `budget` bytes of
+/// replies.
+fn split_replies(events: Vec<TerminalEvent>, budget: usize) -> (Vec<u8>, Vec<TerminalEvent>) {
+    let mut replies = Vec::new();
+    let mut others = Vec::new();
+    let mut full = false;
+    for event in events {
+        match event {
+            TerminalEvent::Reply(reply) => {
+                // Once one reply does not fit, later ones are dropped too, so
+                // the program never receives answers out of order.
+                if !full && replies.len() + reply.len() <= budget {
+                    replies.extend_from_slice(reply.as_bytes());
+                } else {
+                    full = true;
+                }
+            }
+            other => others.push(other),
+        }
+    }
+    (replies, others)
+}
 
 /// A process running in a pseudo-terminal, together with its screen state.
 ///
@@ -36,6 +161,7 @@ type Notify = Arc<dyn Fn() + Send + Sync>;
 /// [`Terminal`].
 pub struct Session {
     pty: Pty,
+    input: InputQueue,
     terminal: Terminal,
     output: Receiver<Vec<u8>>,
     reader: Option<JoinHandle<()>>,
@@ -63,14 +189,19 @@ impl Session {
     ) -> Result<Self> {
         // The terminal clamps the size; the process must see the same one.
         let terminal = Terminal::new(size);
-        let pty = Pty::spawn(command, terminal.size().into())?;
+        let mut pty = Pty::spawn(command, terminal.size().into())?;
         let reader = pty.take_reader()?;
+        let writer = pty
+            .take_writer()
+            .ok_or_else(|| PtyError::Stream("the writer was taken".into()))?;
+        let input = InputQueue::start(writer)?;
         let pending = Arc::new(AtomicBool::new(false));
         let notify: Notify = Arc::new(notify);
         let (output, reader) = start_reader(reader, Arc::clone(&pending), Arc::clone(&notify))?;
 
         Ok(Self {
             pty,
+            input,
             terminal,
             output,
             reader: Some(reader),
@@ -92,8 +223,12 @@ impl Session {
     }
 
     /// Sends input to the process, as if typed on a keyboard.
+    ///
+    /// Never blocks: input is written by a separate thread. If the process
+    /// has stopped reading and too much input is already waiting, the input
+    /// is refused with [`PtyError::InputBacklog`].
     pub fn write(&mut self, bytes: &[u8]) -> Result<()> {
-        self.pty.write_all(bytes)
+        self.input.send(bytes)
     }
 
     /// Resizes both the pseudo-terminal and the screen.
@@ -176,13 +311,10 @@ impl Session {
     }
 
     fn dispatch_events(&mut self) -> Result<Vec<TerminalEvent>> {
-        let mut events = Vec::new();
-        for event in self.terminal.take_events() {
-            match event {
-                TerminalEvent::Reply(reply) => self.pty.write_all(reply.as_bytes())?,
-                other => events.push(other),
-            }
-        }
+        let (replies, events) = split_replies(self.terminal.take_events(), REPLY_BYTES_PER_PUMP);
+        // Replies are best effort: a process that floods queries and does
+        // not read the answers loses them rather than stalling the owner.
+        let _ = self.input.send(&replies);
         Ok(events)
     }
 }
@@ -259,6 +391,9 @@ fn drain(output: &Receiver<Vec<u8>>, budget: usize, mut apply: impl FnMut(&[u8])
 
 impl Drop for Session {
     fn drop(&mut self) {
+        // Input not yet written must not reach whatever outlives the shell
+        // on this pseudo-terminal.
+        self.input.close();
         let _ = self.pty.kill();
         // The reader thread exits on its own once the pseudo-terminal closes;
         // it is detached rather than joined so dropping never blocks.
@@ -320,6 +455,96 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(reader.is_finished());
+    }
+
+    #[test]
+    fn input_backlog_is_bounded_and_never_blocks() {
+        /// A process that never reads: every write blocks forever.
+        struct Stuck(Receiver<()>);
+        impl Write for Stuck {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                let _ = self.0.recv();
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let (_keep_blocked, blocked) = mpsc::channel();
+        let input = InputQueue::start(Box::new(Stuck(blocked))).expect("start writer");
+        let chunk = vec![b'x'; 1024 * 1024];
+        let start = Instant::now();
+        let mut accepted = 0;
+        for _ in 0..20 {
+            if input.send(&chunk).is_ok() {
+                accepted += chunk.len();
+            }
+        }
+
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(accepted <= MAX_PENDING_INPUT);
+        assert!(matches!(
+            input.send(&chunk),
+            Err(PtyError::InputBacklog(len)) if len == chunk.len()
+        ));
+    }
+
+    #[test]
+    fn replies_are_limited_per_pump() {
+        let events = vec![
+            TerminalEvent::Reply("12345".into()),
+            TerminalEvent::Bell,
+            TerminalEvent::Reply("678".into()),
+            TerminalEvent::Reply("9".into()),
+        ];
+
+        let (replies, others) = split_replies(events, 6);
+
+        // Only a prefix is kept: skipping one reply and sending a later one
+        // would give the program answers out of order.
+        assert_eq!(replies, b"12345");
+        assert_eq!(others, [TerminalEvent::Bell]);
+    }
+
+    #[test]
+    fn input_left_when_the_session_closes_is_discarded() {
+        use std::sync::Mutex;
+
+        /// Records what reaches the process; the first write waits.
+        struct Recorder {
+            written: Arc<Mutex<Vec<u8>>>,
+            release: Receiver<()>,
+        }
+        impl Write for Recorder {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                let _ = self.release.recv();
+                self.written.lock().expect("lock").extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let (release, released) = mpsc::channel();
+        let input = InputQueue::start(Box::new(Recorder {
+            written: Arc::clone(&written),
+            release: released,
+        }))
+        .expect("start writer");
+        input.send(b"typed before closing").expect("send");
+        input.send(b"must never arrive").expect("send");
+        // Let the writer pick up the first chunk, then close the session.
+        thread::sleep(Duration::from_millis(100));
+        input.close();
+        drop(input);
+        drop(release);
+
+        thread::sleep(Duration::from_millis(200));
+        let written = written.lock().expect("lock").clone();
+        assert!(!written.windows(4).any(|w| w == b"must"), "{written:?}");
     }
 
     #[test]

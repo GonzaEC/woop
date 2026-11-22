@@ -1,6 +1,6 @@
 # 0013. Bound the cost and the reach of program output
 
-- **Status:** Accepted
+- **Status:** Accepted; replies to queries completed by [0015](0015-write-input-on-a-dedicated-thread.md)
 - **Date:** 2026-11-21
 
 ## Context

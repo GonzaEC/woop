@@ -47,6 +47,10 @@ pub enum PtyError {
     /// Reading from or writing to the pseudo-terminal failed.
     #[error(transparent)]
     Io(#[from] io::Error),
+    /// Input was refused because too much is already waiting for the
+    /// process, which is not reading it.
+    #[error("the process is not reading its input; {0} bytes were not sent")]
+    InputBacklog(usize),
 }
 
 /// Result type used throughout this crate.
@@ -192,7 +196,8 @@ impl ExitStatus {
 /// Dropping a `Pty` closes the pseudo-terminal and terminates the process.
 pub struct Pty {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    /// `None` once handed over with [`Pty::take_writer`].
+    writer: Option<Box<dyn Write + Send>>,
     child: Box<dyn Child + Send + Sync>,
     size: PtySize,
 }
@@ -222,7 +227,7 @@ impl Pty {
 
         Ok(Self {
             master: pair.master,
-            writer,
+            writer: Some(writer),
             child,
             size,
         })
@@ -240,10 +245,25 @@ impl Pty {
     }
 
     /// Sends input to the process, as if typed on a keyboard.
+    ///
+    /// Blocks while the process is not reading its input and the
+    /// pseudo-terminal's buffer is full. Fails once the writer was taken
+    /// with [`Pty::take_writer`].
     pub fn write_all(&mut self, bytes: &[u8]) -> Result<()> {
-        self.writer.write_all(bytes)?;
-        self.writer.flush()?;
+        let writer = self
+            .writer
+            .as_mut()
+            .ok_or_else(|| PtyError::Stream("the writer was taken".into()))?;
+        writer.write_all(bytes)?;
+        writer.flush()?;
         Ok(())
+    }
+
+    /// Takes the writer for the process input, so it can be used on another
+    /// thread: writes block while the process is not reading. Returns `None`
+    /// if it was already taken.
+    pub fn take_writer(&mut self) -> Option<Box<dyn Write + Send>> {
+        self.writer.take()
     }
 
     /// Changes the size of the pseudo-terminal.
