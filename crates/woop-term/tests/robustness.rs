@@ -131,7 +131,7 @@ fn comparable_screen(term: &Terminal) -> woop_term::Screen {
     let mut screen = term.screen();
     for block in &mut screen.blocks {
         block.duration = None;
-        block.index = 0;
+        block.id = 0;
     }
     screen
 }
@@ -149,7 +149,7 @@ fn observe(term: &Terminal, kept_history: usize) -> Observed {
             .iter()
             .map(|block| {
                 (
-                    block.command().to_owned(),
+                    term.block_command(block.id()).unwrap_or_default(),
                     block.exit_code(),
                     block.state(),
                     term.block_rows(block).map(relative),
@@ -188,7 +188,7 @@ fn check_invariants(term: &Terminal) {
     // Blocks in view are in order, inside the screen and point at real blocks.
     let mut previous_start = 0;
     for block in &screen.blocks {
-        assert!(block.index < term.blocks().len());
+        assert!(term.blocks().iter().any(|real| real.id() == block.id));
         assert!(
             block.rows.start < block.rows.end && block.rows.end <= screen.rows,
             "{block:?}"
@@ -221,7 +221,9 @@ proptest! {
                 Op::Resize(rows, cols) => term.resize(TerminalSize::new(rows, cols)),
                 Op::Scroll(lines) => term.scroll(lines),
                 Op::Collapse(index) => {
-                    let _ = term.toggle_collapsed(index);
+                    if let Some(id) = term.blocks().get(index).map(|block| block.id()) {
+                        let _ = term.toggle_collapsed(id);
+                    }
                 }
                 Op::Select(kind, r1, c1, r2, c2) => {
                     term.start_selection(kind, SelectionPoint::new(r1, c1));

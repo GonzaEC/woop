@@ -171,9 +171,11 @@ impl canvas::Program<Message> for TerminalView<'_> {
                     && let Some(block) = self.block_at_row(point.row)
                 {
                     let message = match state.click(point) {
-                        _ if state.modifiers.alt() => Message::CopyBlockCommand(block.index),
-                        1 => Message::SelectBlockOutput(block.index),
-                        _ => Message::ToggleCollapse(block.index),
+                        _ if state.modifiers.alt() => Message::CopyBlockCommand(block.id),
+                        1 => Message::SelectBlockOutput(block.id),
+                        2 => Message::ToggleCollapse(block.id),
+                        // A third click must not undo the second.
+                        _ => return Some(Action::capture()),
                     };
                     return Some(Action::publish(message).and_capture());
                 }
@@ -551,7 +553,7 @@ mod tests {
     #[test]
     fn labels_show_failures_and_durations() {
         let block = |state, exit_code, duration| ScreenBlock {
-            index: 0,
+            id: 1,
             prompt_row: Some(0),
             rows: 0..1,
             state,

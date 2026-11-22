@@ -31,7 +31,8 @@ graph TD
 | `Pty` | `woop-pty` | Owns the pseudo-terminal and the child process: input, resize, exit status |
 | `Terminal` | `woop-term` | Pure emulation state: feed it bytes, read the screen. No I/O, fully unit-testable |
 | `Session` | `woop-term` | Connects a `Pty` to a `Terminal`, reads output on a background thread and answers terminal queries |
-| `Block` | `woop-term` | One command from the shell integration: command text, exit code, duration and position in the scrollback |
+| `Block` | `woop-term` | One command from the shell integration: stable id, exit code, duration, collapsed state and position in the scrollback. Its command text is read on request, as displayed (`Terminal::block_command`) |
+| `ScreenBlock` | `woop-term` | A block as it appears in a `Screen`: rows in view, state, exit code, duration |
 | `Screen` | `woop-term` | Snapshot of the visible cells, colours and cursor in Woop's own types, ready to draw |
 | `input` | `woop-term` | Encodes key presses and pasted text into the bytes applications expect |
 | `TerminalView` | `woop-app` | iced canvas program that draws a `Screen` and turns window events into messages |
@@ -43,6 +44,8 @@ PTY reading runs on a dedicated thread per session, so slow rendering never bloc
 ## Shell integration
 
 Command blocks rely on the shell emitting OSC 133 semantic prompt marks around the prompt, the command and its output. Woop ships integration scripts for PowerShell, bash, zsh and fish in `crates/woop-term/shell/` and loads them automatically after the user's own configuration (`woop_term::shell_integration`). `woop-term` reads the marks from the output stream and keeps a list of `Block`s, whose positions are anchored to logical lines so they survive resizing ([ADR 0011](adr/0011-shell-integration-and-command-blocks.md)). Shells without integration work as in any terminal, without blocks.
+
+`Terminal::screen` builds each snapshot from a list of view rows. With no collapsed block this is simply the grid lines in view; with collapsed blocks, each hidden output becomes one summary row, and the view is filled from above at the bottom of the scrollback or from its top line when scrolled back. Scrolling, jumping between blocks and mapping mouse positions to text all go through the same rows, so they agree with what is drawn. The rows hidden by folds are found in one walk over the grid per snapshot.
 
 ## Key dependencies
 

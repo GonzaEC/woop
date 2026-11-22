@@ -119,7 +119,8 @@ pub struct Screen {
     pub cells: Vec<Cell>,
     /// The cursor, or `None` when it is hidden or scrolled out of view.
     pub cursor: Option<Cursor>,
-    /// How many lines the view is scrolled back into history.
+    /// How many grid lines the view is scrolled back into history. With
+    /// collapsed blocks, screen rows do not map one to one to grid lines.
     pub scroll_offset: usize,
     /// Command blocks in view, oldest first. Empty without shell
     /// integration and while a full-screen application is shown.

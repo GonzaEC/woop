@@ -53,11 +53,11 @@ pub enum Message {
     /// The mouse moved while selecting.
     SelectionExtended(SelectionPoint),
     /// A block's bar was clicked: select that block's output.
-    SelectBlockOutput(usize),
+    SelectBlockOutput(u64),
     /// A block's bar was double-clicked: collapse or expand its output.
-    ToggleCollapse(usize),
+    ToggleCollapse(u64),
     /// A block's bar was Alt+clicked: copy its command.
-    CopyBlockCommand(usize),
+    CopyBlockCommand(u64),
 }
 
 struct Woop {
@@ -128,25 +128,28 @@ impl Woop {
                     self.refresh();
                 }
             }
-            Message::SelectBlockOutput(index) => {
+            Message::SelectBlockOutput(id) => {
                 if let Some(session) = &mut self.session
-                    && session.terminal_mut().select_block_output(index)
+                    && session.terminal_mut().select_block_output(id)
                 {
                     self.refresh();
                 }
             }
-            Message::ToggleCollapse(index) => {
+            Message::ToggleCollapse(id) => {
                 if let Some(session) = &mut self.session
-                    && session.terminal_mut().toggle_collapsed(index).is_some()
+                    && session.terminal_mut().toggle_collapsed(id).is_some()
                 {
                     self.refresh();
                 }
             }
-            Message::CopyBlockCommand(index) => {
-                if let Some(command) = self.session.as_ref().and_then(|session| {
-                    let block = session.terminal().blocks().get(index)?;
-                    Some(block.command().to_owned()).filter(|command| !command.is_empty())
-                }) {
+            Message::CopyBlockCommand(id) => {
+                // Read now, from what is displayed, not from what the line
+                // held when the command was submitted.
+                if let Some(command) = self
+                    .session
+                    .as_ref()
+                    .and_then(|session| session.terminal().block_command(id))
+                {
                     return clipboard::write(command);
                 }
             }

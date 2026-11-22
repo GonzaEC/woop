@@ -33,7 +33,11 @@ fn run_block(session: &mut Session, command: &str) -> (String, Option<i32>) {
         .iter()
         .rfind(|block| block.state() == BlockState::Finished)
         .expect("finished block");
-    (block.command().to_owned(), block.exit_code())
+    let command = session
+        .terminal()
+        .block_command(block.id())
+        .unwrap_or_default();
+    (command, block.exit_code())
 }
 
 fn finished(session: &Session) -> usize {
@@ -99,6 +103,24 @@ fn bash_marks_blocks() {
         "sh -c 'exit 3'",
         3,
     );
+}
+
+/// The user's own PROMPT_COMMAND must still see the last exit status.
+#[cfg(unix)]
+#[test]
+fn bash_keeps_the_exit_status_for_the_users_prompt_command() {
+    let home = empty_home("bash-status");
+    std::fs::write(
+        home.join(".bashrc"),
+        "PROMPT_COMMAND='echo \"woop-status=$?\"'\n",
+    )
+    .expect("write .bashrc");
+    let mut session = start(ShellCommand::new("bash").env("HOME", &home));
+
+    run_block(&mut session, "sh -c 'exit 3'");
+
+    let screen = session.terminal().screen_text();
+    assert!(screen.contains("woop-status=3"), "screen was:\n{screen}");
 }
 
 #[cfg(unix)]
