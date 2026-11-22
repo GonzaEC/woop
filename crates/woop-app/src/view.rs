@@ -8,9 +8,7 @@ use iced::widget::canvas::{self, Action, Frame, Geometry};
 use std::time::{Duration, Instant};
 
 use iced::{Color, Event, Font, Pixels, Point, Rectangle, Renderer, Size, Theme, keyboard};
-use woop_term::{
-    Cell, CursorShape, Screen, SelectionKind, SelectionPoint, TerminalMode, TerminalSize,
-};
+use woop_term::{Cell, CursorShape, Screen, SelectionKind, SelectionPoint, TerminalSize};
 
 use crate::Message;
 use crate::keys;
@@ -96,8 +94,8 @@ pub struct TerminalView<'a> {
     pub palette: &'a Palette,
     /// Cell size.
     pub metrics: Metrics,
-    /// Input modes of the running application.
-    pub mode: TerminalMode,
+    /// What key presses mean right now.
+    pub keys: keys::KeyContext,
     /// Cached geometry, cleared whenever the screen changes.
     pub cache: &'a canvas::Cache,
 }
@@ -152,7 +150,7 @@ impl canvas::Program<Message> for TerminalView<'_> {
                 modifiers,
                 text,
                 ..
-            }) => keys::key_press(key, *modifiers, text.as_deref(), self.mode)
+            }) => keys::key_press(key, *modifiers, text.as_deref(), self.keys)
                 .map(|action| Action::publish(Message::Key(action)).and_capture()),
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let position = cursor.position_in(bounds)?;
@@ -471,7 +469,11 @@ mod tests {
             screen: &screen,
             palette: &palette,
             metrics: metrics(),
-            mode: TerminalMode::default(),
+            keys: keys::KeyContext {
+                mode: woop_term::TerminalMode::default(),
+                has_selection: false,
+                shortcuts: keys::Shortcuts::platform(),
+            },
             cache: &cache,
         };
 

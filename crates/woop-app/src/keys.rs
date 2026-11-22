@@ -18,14 +18,51 @@ pub enum KeyAction {
     ScrollPages(i32),
 }
 
+/// Clipboard shortcut conventions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shortcuts {
+    /// Ctrl+C copies when text is selected and interrupts otherwise;
+    /// Ctrl+V pastes. Ctrl+Shift+C and Ctrl+Shift+V also work.
+    Windows,
+    /// Ctrl+Shift+C and Ctrl+Shift+V, leaving Ctrl+C and Ctrl+V to the shell.
+    Unix,
+    /// Cmd+C and Cmd+V.
+    MacOs,
+}
+
+impl Shortcuts {
+    /// Conventions of the platform Woop was built for.
+    pub const fn platform() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else {
+            Self::Unix
+        }
+    }
+}
+
+/// Context needed to interpret a key press.
+#[derive(Debug, Clone, Copy)]
+pub struct KeyContext {
+    /// Input modes of the running application.
+    pub mode: TerminalMode,
+    /// Some text is selected.
+    pub has_selection: bool,
+    /// Clipboard shortcut conventions.
+    pub shortcuts: Shortcuts,
+}
+
 /// Interprets a key press. Returns `None` for keys that do nothing.
 pub fn key_press(
     key: &WindowKey,
     modifiers: WindowModifiers,
     text: Option<&str>,
-    mode: TerminalMode,
+    context: KeyContext,
 ) -> Option<KeyAction> {
-    if let Some(shortcut) = shortcut(key, modifiers) {
+    let mode = context.mode;
+    if let Some(shortcut) = shortcut(key, modifiers, context) {
         return Some(shortcut);
     }
 
@@ -56,16 +93,26 @@ pub fn key_press(
         .map(|text| KeyAction::Input(text.as_bytes().to_vec()))
 }
 
-fn shortcut(key: &WindowKey, modifiers: WindowModifiers) -> Option<KeyAction> {
+fn shortcut(key: &WindowKey, modifiers: WindowModifiers, context: KeyContext) -> Option<KeyAction> {
     let character = match key {
         WindowKey::Character(chars) => chars.chars().next().map(|ch| ch.to_ascii_lowercase()),
         _ => None,
     };
-    let command = modifiers.logo() || (modifiers.control() && modifiers.shift());
+    let ctrl_only =
+        modifiers.control() && !modifiers.shift() && !modifiers.alt() && !modifiers.logo();
+    let ctrl_shift = modifiers.control() && modifiers.shift() && !modifiers.alt();
+    let (copy, paste) = match context.shortcuts {
+        Shortcuts::Windows => (
+            ctrl_shift || (ctrl_only && context.has_selection),
+            ctrl_shift || ctrl_only,
+        ),
+        Shortcuts::Unix => (ctrl_shift, ctrl_shift),
+        Shortcuts::MacOs => (modifiers.logo(), modifiers.logo()),
+    };
 
     match (key, character) {
-        (_, Some('c')) if command => Some(KeyAction::Copy),
-        (_, Some('v')) if command => Some(KeyAction::Paste),
+        (_, Some('c')) if copy => Some(KeyAction::Copy),
+        (_, Some('v')) if paste => Some(KeyAction::Paste),
         (WindowKey::Named(Named::Insert), _) if modifiers.shift() => Some(KeyAction::Paste),
         (WindowKey::Named(Named::PageUp), _) if modifiers.shift() => {
             Some(KeyAction::ScrollPages(1))
@@ -115,7 +162,26 @@ mod tests {
     use super::*;
 
     fn press(key: WindowKey, modifiers: WindowModifiers, text: Option<&str>) -> Option<KeyAction> {
-        key_press(&key, modifiers, text, TerminalMode::default())
+        let context = KeyContext {
+            mode: TerminalMode::default(),
+            has_selection: false,
+            shortcuts: Shortcuts::Unix,
+        };
+        key_press(&key, modifiers, text, context)
+    }
+
+    fn press_with(
+        shortcuts: Shortcuts,
+        has_selection: bool,
+        key: WindowKey,
+        modifiers: WindowModifiers,
+    ) -> Option<KeyAction> {
+        let context = KeyContext {
+            mode: TerminalMode::default(),
+            has_selection,
+            shortcuts,
+        };
+        key_press(&key, modifiers, None, context)
     }
 
     fn character(ch: &str) -> WindowKey {
@@ -172,13 +238,23 @@ mod tests {
     #[test]
     fn paste_shortcuts() {
         let ctrl_shift = WindowModifiers::CTRL | WindowModifiers::SHIFT;
+        let v = || character("v");
         assert_eq!(
-            press(character("V"), ctrl_shift, None),
+            press_with(Shortcuts::Unix, false, v(), ctrl_shift),
             Some(KeyAction::Paste)
         );
         assert_eq!(
-            press(character("v"), WindowModifiers::LOGO, None),
+            press_with(Shortcuts::Windows, false, v(), WindowModifiers::CTRL),
             Some(KeyAction::Paste)
+        );
+        assert_eq!(
+            press_with(Shortcuts::MacOs, false, v(), WindowModifiers::LOGO),
+            Some(KeyAction::Paste)
+        );
+        assert_eq!(
+            press_with(Shortcuts::Unix, false, v(), WindowModifiers::CTRL),
+            input(&[0x16]),
+            "Ctrl+V reaches the shell outside Windows"
         );
         assert_eq!(
             press(
@@ -191,19 +267,39 @@ mod tests {
     }
 
     #[test]
-    fn copy_shortcuts_leave_ctrl_c_to_the_shell() {
+    fn ctrl_c_copies_on_windows_only_while_text_is_selected() {
+        let c = || character("c");
+        let ctrl = WindowModifiers::CTRL;
+        assert_eq!(
+            press_with(Shortcuts::Windows, true, c(), ctrl),
+            Some(KeyAction::Copy)
+        );
+        assert_eq!(
+            press_with(Shortcuts::Windows, false, c(), ctrl),
+            input(&[0x03])
+        );
+        assert_eq!(press_with(Shortcuts::Unix, true, c(), ctrl), input(&[0x03]));
+    }
+
+    #[test]
+    fn copy_shortcuts() {
         let ctrl_shift = WindowModifiers::CTRL | WindowModifiers::SHIFT;
         assert_eq!(
-            press(character("C"), ctrl_shift, None),
+            press_with(Shortcuts::Unix, true, character("C"), ctrl_shift),
             Some(KeyAction::Copy)
         );
         assert_eq!(
-            press(character("c"), WindowModifiers::LOGO, None),
+            press_with(Shortcuts::Windows, true, character("C"), ctrl_shift),
             Some(KeyAction::Copy)
         );
         assert_eq!(
-            press(character("c"), WindowModifiers::CTRL, None),
-            input(&[0x03])
+            press_with(
+                Shortcuts::MacOs,
+                true,
+                character("c"),
+                WindowModifiers::LOGO
+            ),
+            Some(KeyAction::Copy)
         );
     }
 

@@ -252,12 +252,20 @@ impl Terminal {
         self.term.selection = None;
     }
 
+    /// Returns whether any text is selected.
+    pub fn has_selection(&self) -> bool {
+        self.term
+            .selection
+            .as_ref()
+            .is_some_and(|selection| !selection.is_empty())
+    }
+
     /// Returns the selected text, or `None` if nothing is selected.
     ///
     /// Rows joined by wrapping are copied as one line, and trailing
     /// whitespace at the end of each line is removed.
     pub fn selection_text(&self) -> Option<String> {
-        if self.term.selection.as_ref()?.is_empty() {
+        if !self.has_selection() {
             return None;
         }
         self.term
