@@ -556,7 +556,14 @@ mod tests {
         // The parser buffers OSC payloads without limit; an unterminated
         // one would grow memory for as long as the output continues. A
         // control character between ESC and `]` must not hide it.
-        for start in ["\x1b]0;", "\x1b\x00]0;", "\x1b\r]0;"] {
+        for start in [
+            "\x1b]0;",
+            "\x1b\x00]0;",
+            "\x1b\r]0;",
+            "\x1b\x7f]0;",
+            "\x1b\u{e9}]0;",
+            "\x1b]0;t\x1b\x7f]0;",
+        ] {
             let mut term = terminal(3, 20);
             let endless = format!("{start}{}", "x".repeat(200 * 1024));
             term.advance(endless.as_bytes());

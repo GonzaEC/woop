@@ -16,7 +16,7 @@ Judge every change in this order; when two conflict, the earlier one wins, and a
 
 1. **Security is paramount.** A terminal runs the user's shell and displays output from untrusted sources (files, remote machines).
    - Treat program output as untrusted input. Anything that lets output act beyond drawing text (clipboard writes, replies containing data, links, files) is off by default or needs an explicit user action, and is bounded in size.
-   - Code that reads output before the emulator (the mark scanner in `woop-term`) must interpret it exactly as the emulator's parser does, checked against the parser's source; any difference lets crafted output slip past it. Test the variants: control characters inside a sequence, numeric parameters, split reads.
+   - Code that reads output before the emulator (the mark scanner in `woop-term`) must interpret it exactly as the emulator's parser does, checked against the parser's source; any difference lets crafted output slip past it. Test the variants: control characters, DEL and high bytes inside a sequence, numeric parameters, split reads.
    - Never type anything into the shell that the user did not, except the standard replies needed to run (cursor position, device attributes). Pasted text must not carry control sequences.
    - Bound every buffer, channel and history fed by program output.
    - No `unsafe` without an ADR. Write files only to the user's own directories, with permissions that keep other users out. No network access except user-configured AI providers. Never log or store secrets.

@@ -88,10 +88,11 @@ impl Default for MarkScanner {
     }
 }
 
-/// Whether the emulator executes `byte` inside an escape sequence without
-/// leaving it: C0 controls other than CAN, SUB and ESC.
-fn executes_in_escape(byte: u8) -> bool {
-    matches!(byte, 0x00..=0x17 | 0x19 | 0x1c..=0x1f)
+/// Whether the emulator stays in its escape state after `byte`: it executes
+/// C0 controls other than CAN, SUB and ESC, and ignores DEL and bytes from
+/// 0x80 up, waiting for the rest of the sequence.
+fn stays_in_escape(byte: u8) -> bool {
+    matches!(byte, 0x00..=0x17 | 0x19 | 0x1c..=0x1f | 0x7f..=0xff)
 }
 
 impl MarkScanner {
@@ -120,11 +121,11 @@ impl MarkScanner {
                     marks.push((index + 1, Mark::HistoryCleared));
                     State::Ground
                 }
-                // C0 controls are executed inside an escape sequence without
-                // ending it; the emulator keeps waiting for the rest.
+                // C0 controls, DEL and high bytes do not end an escape
+                // sequence; the emulator keeps waiting for the rest.
                 (State::Escape | State::OscEscape | State::SkipEscape, ESC) => State::Escape,
                 (State::Escape | State::OscEscape | State::SkipEscape, _)
-                    if executes_in_escape(byte) =>
+                    if stays_in_escape(byte) =>
                 {
                     State::Escape
                 }
