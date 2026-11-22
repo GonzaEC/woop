@@ -11,8 +11,11 @@ fi
 if [ -z "$__woop_integrated" ]; then
     __woop_integrated=1
 
+    # Returns the status it saves, so the user's PROMPT_COMMAND, which runs
+    # next, still sees the last command's exit status in $?.
     __woop_save_status() {
         __woop_status=$?
+        return "$__woop_status"
     }
 
     __woop_prompt() {
@@ -34,9 +37,11 @@ if [ -z "$__woop_integrated" ]; then
     if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; }; then
         # PS0 is printed after a command is read and before it runs.
         PS0='\033]133;C\007'"$PS0"
-    else
+    elif [ -z "$(trap -p DEBUG)" ]; then
         # Older versions have no PS0; use the DEBUG trap, which runs before
-        # every command, and only mark the first one after a prompt.
+        # every command, and only mark the first one after a prompt. A DEBUG
+        # trap the user already set is left alone: commands are then not
+        # marked, but the user's configuration keeps working.
         __woop_preexec() {
             if [ -n "$__woop_at_prompt" ]; then
                 __woop_at_prompt=

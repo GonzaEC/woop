@@ -393,9 +393,11 @@ impl Terminal {
         self.blocks.rows(&self.term, block)
     }
 
-    /// Number of lines in the scrollback above the screen. Together with
-    /// [`Terminal::scroll_offset`] it converts [`BlockRows`] into screen
-    /// rows: `screen_row = row - (history_size - scroll_offset)`.
+    /// Number of lines in the scrollback above the screen. [`BlockRows`]
+    /// count rows from the top of the scrollback, so `row - history_size` is
+    /// a row's position relative to the top of the screen. Rows drawn on
+    /// screen can differ once blocks are collapsed; use the blocks of
+    /// [`Terminal::screen`] ([`crate::ScreenBlock`]) for on-screen positions.
     pub fn history_size(&self) -> usize {
         self.term.grid().history_size()
     }
@@ -558,6 +560,16 @@ impl Terminal {
     /// Scrolls the view through history. Positive values scroll up, towards
     /// older output.
     pub fn scroll(&mut self, lines: i32) {
+        // With collapsed blocks, each fold counts as one row, so every step
+        // moves what is shown.
+        if !self.term.mode().contains(TermMode::ALT_SCREEN)
+            && let Some(offset) = self.blocks.scroll_offset_after(&self.term, lines)
+        {
+            let current = self.term.grid().display_offset();
+            let delta = i32::try_from(offset as i64 - current as i64).unwrap_or(0);
+            self.term.scroll_display(Scroll::Delta(delta));
+            return;
+        }
         self.term.scroll_display(Scroll::Delta(lines));
     }
 

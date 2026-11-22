@@ -173,7 +173,9 @@ impl canvas::Program<Message> for TerminalView<'_> {
                     let message = match state.click(point) {
                         _ if state.modifiers.alt() => Message::CopyBlockCommand(block.id),
                         1 => Message::SelectBlockOutput(block.id),
-                        _ => Message::ToggleCollapse(block.id),
+                        2 => Message::ToggleCollapse(block.id),
+                        // A third click must not undo the second.
+                        _ => return Some(Action::capture()),
                     };
                     return Some(Action::publish(message).and_capture());
                 }

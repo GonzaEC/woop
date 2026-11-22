@@ -403,72 +403,136 @@ impl BlockList {
         Some(block.collapsed)
     }
 
-    /// Returns the rows of the view, top to bottom: the grid lines in view,
-    /// with the output of collapsed blocks replaced by one summary row each,
-    /// and more lines from above filling the space they leave.
+    /// Grid lines hidden by collapsed blocks, as sorted, non-overlapping
+    /// `[first, end)` ranges, found in one walk over the grid.
+    pub(crate) fn folds<T>(&self, term: &Term<T>) -> Vec<(i32, i32)> {
+        let collapsed: Vec<&Block> = self.blocks.iter().filter(|block| block.collapsed).collect();
+        if collapsed.is_empty() {
+            return Vec::new();
+        }
+        let anchors: Vec<Anchor> = collapsed
+            .iter()
+            .flat_map(|block| [block.output, block.end])
+            .flatten()
+            .collect();
+        let lines = anchor_lines(term, &anchors);
+        let mut folds = Vec::with_capacity(collapsed.len());
+        let mut next = 0;
+        for block in collapsed {
+            let (Some(_), Some(_)) = (block.output, block.end) else {
+                next += usize::from(block.output.is_some()) + usize::from(block.end.is_some());
+                continue;
+            };
+            if let (Some(first), Some(end)) = (lines[next], lines[next + 1]) {
+                // Hiding a single line behind a summary saves nothing.
+                if end - first > 1 && folds.last().is_none_or(|&(_, last)| first >= last) {
+                    folds.push((first, end));
+                }
+            }
+            next += 2;
+        }
+        folds
+    }
+
+    /// Returns the rows of the view, top to bottom: grid lines, with the
+    /// output of collapsed blocks replaced by one summary row each.
+    ///
+    /// At the bottom of the scrollback the view ends at the last line, so the
+    /// latest output stays visible, and lines from above fill the space
+    /// folds leave. Scrolled back, the view starts at its top line instead,
+    /// so a block jumped to is shown from its prompt.
     pub(crate) fn view<T>(&self, term: &Term<T>) -> Vec<ViewLine> {
         let grid = term.grid();
         let rows = grid.screen_lines();
-        let top = -(grid.display_offset() as i32);
-        if !self.blocks.iter().any(|block| block.collapsed) {
-            return (top..top + rows as i32).map(ViewLine::Grid).collect();
+        let offset = grid.display_offset() as i32;
+        let folds = self.folds(term);
+        if folds.is_empty() {
+            return (-offset..rows as i32 - offset)
+                .map(ViewLine::Grid)
+                .collect();
         }
-
-        // Grid lines hidden by collapsed blocks, as [first, end) ranges.
-        let history = grid.history_size() as i32;
-        let mut folds: Vec<(i32, i32)> = self
-            .blocks
-            .iter()
-            .filter(|block| block.collapsed)
-            .filter_map(|block| {
-                let rows = self.rows(term, block)?;
-                let first = rows.output? as i32 - history;
-                let end = rows.end? as i32 - history;
-                // Hiding a single line behind a summary saves nothing.
-                (end - first > 1).then_some((first, end))
-            })
-            .collect();
-        folds.sort_unstable();
-        let fold_ending_at = |line: i32| {
-            folds
-                .iter()
-                .find(|&&(first, end)| line >= first && line < end)
-        };
-
         let topmost = grid.topmost_line().0;
         let bottommost = grid.bottommost_line().0;
-        let mut view = Vec::with_capacity(rows);
-        // Fill upwards from the bottom of the view.
-        let mut line = top + rows as i32 - 1;
-        while view.len() < rows && line >= topmost {
-            if let Some(&(first, end)) = fold_ending_at(line) {
-                view.push(ViewLine::Folded {
-                    first,
-                    hidden: (end - first) as usize,
-                });
-                line = first - 1;
+        let fold_at = |line: i32| fold_containing(&folds, line);
+        let entry = |(first, end): (i32, i32)| ViewLine::Folded {
+            first,
+            hidden: (end - first) as usize,
+        };
+
+        // Lines going down from `start`, and going up from it.
+        let mut below = Vec::with_capacity(rows);
+        let mut above = Vec::with_capacity(rows);
+        let start = if offset == 0 {
+            bottommost + 1
+        } else {
+            let top = -offset;
+            fold_at(top).map_or(top, |(first, _)| first)
+        };
+        let mut line = start;
+        while below.len() < rows && line <= bottommost {
+            if let Some(fold) = fold_at(line) {
+                below.push(entry(fold));
+                line = fold.1;
             } else {
-                view.push(ViewLine::Grid(line));
-                line -= 1;
-            }
-        }
-        view.reverse();
-        // Near the top of the scrollback, fill downwards instead.
-        let mut line = top + rows as i32;
-        while view.len() < rows && line <= bottommost {
-            if let Some(&(first, end)) = fold_ending_at(line) {
-                view.push(ViewLine::Folded {
-                    first,
-                    hidden: (end - first) as usize,
-                });
-                line = end;
-            } else {
-                view.push(ViewLine::Grid(line));
+                below.push(ViewLine::Grid(line));
                 line += 1;
             }
         }
-        view.resize(rows, ViewLine::Blank);
-        view
+        let mut line = start - 1;
+        while below.len() + above.len() < rows && line >= topmost {
+            if let Some(fold) = fold_at(line) {
+                above.push(entry(fold));
+                line = fold.0 - 1;
+            } else {
+                above.push(ViewLine::Grid(line));
+                line -= 1;
+            }
+        }
+        above.reverse();
+        above.extend(below);
+        above.resize(rows, ViewLine::Blank);
+        above
+    }
+
+    /// The display offset after scrolling the view `lines` rows (positive is
+    /// up, towards older output), counting each fold as one row. `None` when
+    /// nothing is collapsed, so scrolling works on grid lines as usual.
+    pub(crate) fn scroll_offset_after<T>(&self, term: &Term<T>, lines: i32) -> Option<usize> {
+        let folds = self.folds(term);
+        if folds.is_empty() {
+            return None;
+        }
+        let grid = term.grid();
+        let rows = grid.screen_lines();
+        let topmost = grid.topmost_line().0;
+        let bottommost = grid.bottommost_line().0;
+        let view = self.view(term);
+        let mut top = view.iter().find_map(|entry| entry.line()).unwrap_or(0);
+        for _ in 0..lines.unsigned_abs() {
+            let next = if lines > 0 {
+                let line = top - 1;
+                fold_containing(&folds, line).map_or(line, |(first, _)| first)
+            } else {
+                fold_containing(&folds, top).map_or(top + 1, |(_, end)| end)
+            };
+            if next < topmost || next > bottommost {
+                break;
+            }
+            top = next;
+        }
+        // Once the rest of the scrollback fits below the top line, the view is
+        // back at the bottom.
+        let mut remaining = 0;
+        let mut line = top;
+        while line <= bottommost && remaining <= rows {
+            line = fold_containing(&folds, line).map_or(line + 1, |(_, end)| end);
+            remaining += 1;
+        }
+        Some(if remaining <= rows {
+            0
+        } else {
+            (-top).max(0) as usize
+        })
     }
 
     /// Returns the blocks that appear in `view`, oldest first.
@@ -477,6 +541,9 @@ impl BlockList {
     /// the view itself, whatever the number of blocks: this runs for every
     /// frame (ADR 0013).
     pub(crate) fn visible<T>(&self, term: &Term<T>, view: &[ViewLine]) -> Vec<ScreenBlock> {
+        if self.blocks.is_empty() {
+            return Vec::new();
+        }
         let grid = term.grid();
         let columns = grid.columns().max(1);
         // Logical line of each row in the view; blank rows repeat the last.
@@ -687,6 +754,40 @@ fn offset_point<T>(term: &Term<T>, mut row: i32, mut offset: usize) -> Option<Po
         row += 1;
     }
     (row <= bottom).then(|| Point::new(Line(row), Column(offset.min(columns - 1))))
+}
+
+/// The fold containing grid `line`, if any. `folds` is sorted and does not
+/// overlap, so a binary search finds it.
+fn fold_containing(folds: &[(i32, i32)], line: i32) -> Option<(i32, i32)> {
+    let after = folds.partition_point(|&(first, _)| first <= line);
+    let &(first, end) = folds.get(after.checked_sub(1)?)?;
+    (line >= first && line < end).then_some((first, end))
+}
+
+/// Grid lines of `anchors`, which must be sorted, in one walk from the top
+/// of the scrollback: the cost is the history plus the anchors, however
+/// many anchors there are.
+fn anchor_lines<T>(term: &Term<T>, anchors: &[Anchor]) -> Vec<Option<i32>> {
+    let grid = term.grid();
+    let mut lines = vec![None; anchors.len()];
+    let mut next = 0;
+    let mut line = 0;
+    for row in grid.topmost_line().0..=grid.bottommost_line().0 {
+        while next < anchors.len() && anchors[next].line < line {
+            next += 1;
+        }
+        while next < anchors.len() && anchors[next].line == line {
+            lines[next] = offset_point(term, row, anchors[next].offset).map(|point| point.line.0);
+            next += 1;
+        }
+        if next == anchors.len() {
+            break;
+        }
+        if !wraps(term, Line(row)) {
+            line += 1;
+        }
+    }
+    lines
 }
 
 /// Finds the point of `start`, walking up from `end` (whose anchor is
@@ -1171,6 +1272,77 @@ mod tests {
 
         assert_eq!(term.toggle_collapsed(1), Some(false));
         assert_eq!(lines(&term), before);
+    }
+
+    fn view_lines(term: &Terminal) -> Vec<String> {
+        let screen = term.screen();
+        (0..screen.rows)
+            .map(|row| {
+                let text: String = screen.row(row).iter().map(|cell| cell.ch).collect();
+                text.trim_end().to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_fold_near_the_top_of_the_scrollback_is_shown_once() {
+        let lines = "x\r\n".repeat(20);
+        let mut term = terminal(
+            5,
+            30,
+            &format!("{}two\r\n{C}y\r\n{}{A}$ {B}", run("one", &lines, 0), d(0)),
+        );
+        term.toggle_collapsed(1);
+        term.scroll(1_000);
+
+        let shown = view_lines(&term);
+        let summaries = shown
+            .iter()
+            .filter(|line| line.contains("lines hidden"))
+            .count();
+        assert_eq!(summaries, 1, "{shown:?}");
+        assert_eq!(shown[0], "$ one", "{shown:?}");
+    }
+
+    #[test]
+    fn scrolling_across_a_fold_moves_on_every_step() {
+        let lines = "x\r\n".repeat(50);
+        let mut output = run("one", &lines, 0);
+        for n in 0..8 {
+            output += &format!("c{n}\r\n{C}o{n}\r\n{}{A}$ {B}", d(0));
+        }
+        let mut term = terminal(5, 30, &output);
+        term.toggle_collapsed(1);
+
+        // Every step changes what is shown, until the first prompt is on top.
+        let mut previous = view_lines(&term);
+        let mut steps = 0;
+        while previous[0] != "$ one" {
+            term.scroll(1);
+            let shown = view_lines(&term);
+            assert_ne!(shown, previous, "step {steps} did nothing");
+            previous = shown;
+            steps += 1;
+            assert!(steps < 30, "never reached the top");
+        }
+        // 19 rows in view (the fold counts as one) on a 5-row screen.
+        assert_eq!(steps, 14);
+    }
+
+    #[test]
+    fn jumping_with_folds_puts_the_prompt_on_top() {
+        let lines = "z\r\n".repeat(30);
+        let mut output = run("zero", &lines, 0);
+        for name in ["one", "two"] {
+            output += &format!("{name}\r\n{C}{}{}{A}$ {B}", "o\r\n".repeat(6), d(0));
+        }
+        let mut term = terminal(5, 30, &output);
+        term.toggle_collapsed(1);
+
+        assert!(term.jump_to_block(-1));
+        assert!(term.jump_to_block(-1));
+        let shown = view_lines(&term);
+        assert!(shown[0].ends_with("one"), "{shown:?}");
     }
 
     #[test]

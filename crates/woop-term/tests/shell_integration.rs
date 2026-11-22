@@ -105,6 +105,24 @@ fn bash_marks_blocks() {
     );
 }
 
+/// The user's own PROMPT_COMMAND must still see the last exit status.
+#[cfg(unix)]
+#[test]
+fn bash_keeps_the_exit_status_for_the_users_prompt_command() {
+    let home = empty_home("bash-status");
+    std::fs::write(
+        home.join(".bashrc"),
+        "PROMPT_COMMAND='echo \"woop-status=$?\"'\n",
+    )
+    .expect("write .bashrc");
+    let mut session = start(ShellCommand::new("bash").env("HOME", &home));
+
+    run_block(&mut session, "sh -c 'exit 3'");
+
+    let screen = session.terminal().screen_text();
+    assert!(screen.contains("woop-status=3"), "screen was:\n{screen}");
+}
+
 #[cfg(unix)]
 #[test]
 fn zsh_marks_blocks() {
