@@ -37,7 +37,20 @@ function Global:prompt {
 
     $text = & $Global:__WoopOriginalPrompt
     $Global:LASTEXITCODE = $exitCode
-    "$marks$(__WoopMark 'A')$text$(__WoopMark 'B')"
+    # The current directory, percent-encoded, so that new panes open here:
+    # only for file system locations, and left out when too long for the
+    # mark or impossible to encode (a name with an unpaired surrogate),
+    # which must never break the prompt.
+    $directory = ''
+    if ($PWD.Provider.Name -eq 'FileSystem') {
+        try {
+            $encoded = [uri]::EscapeDataString($PWD.ProviderPath)
+            if ($encoded.Length -le 3800) { $directory = ';cwd=' + $encoded }
+        } catch {
+            $directory = ''
+        }
+    }
+    "$marks$(__WoopMark "A$directory")$text$(__WoopMark 'B')"
 }
 
 # PSReadLine reads the command line; mark the start of the output once it

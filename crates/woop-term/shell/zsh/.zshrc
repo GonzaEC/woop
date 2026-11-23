@@ -18,17 +18,48 @@ if [[ -z $__woop_integrated ]]; then
         __woop_status=$?
     }
 
+    # Percent-encodes $1, byte by byte, so that a directory cannot end or
+    # change the mark it is sent in.
+    __woop_encode() {
+        emulate -L zsh
+        local LC_ALL=C text=$1 encoded= char
+        local -i i
+        for (( i = 1; i <= ${#text}; i++ )); do
+            char=${text[i]}
+            case $char in
+                [a-zA-Z0-9.~_/-]) encoded+=$char ;;
+                *) printf -v char '%%%02X' "'$char"; encoded+=$char ;;
+            esac
+        done
+        print -rn -- "$encoded"
+    }
+
     __woop_precmd() {
         if [[ -n $__woop_ran ]]; then
             print -n "\e]133;D;$__woop_status;woop=$__woop_token\a"
         fi
         __woop_ran=
-        # Wrap the prompt again if a theme rebuilt it.
-        # A prompt with its own, unsigned marks is wrapped too: Woop ignores
-        # those.
-        if [[ $PS1 != *"woop=$__woop_token"* ]]; then
-            PS1=$'%{\e]133;A;woop='"$__woop_token"$'\a%}'"$PS1"$'%{\e]133;B;woop='"$__woop_token"$'\a%}'
+        # The current directory, so that new panes open here. Left out when
+        # too long for the mark, which would then be dropped as a whole.
+        local directory=$(__woop_encode "$PWD")
+        if (( ${#directory} > 3800 )); then
+            directory=
+        else
+            # `%` starts a prompt escape in zsh: the encoding's are doubled.
+            directory=";cwd=${directory//\%/%%}"
         fi
+        # Take out the marks added at the last prompt, wherever they are now,
+        # so that changes others made to the prompt stay (a virtual
+        # environment's name), then wrap it again with the current directory.
+        # A prompt a theme rebuilt, or with its own unsigned marks, is simply
+        # wrapped: Woop ignores unsigned marks.
+        if [[ -n $__woop_prefix ]]; then
+            PS1=${PS1/"$__woop_prefix"/}
+            PS1=${PS1/"$__woop_suffix"/}
+        fi
+        __woop_prefix=$'%{\e]133;A;woop='"$__woop_token$directory"$'\a%}'
+        __woop_suffix=$'%{\e]133;B;woop='"$__woop_token"$'\a%}'
+        PS1=$__woop_prefix$PS1$__woop_suffix
     }
 
     __woop_preexec() {

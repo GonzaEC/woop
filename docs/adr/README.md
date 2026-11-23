@@ -40,3 +40,4 @@ Start from [the template](template.md) and add the record to the index below in 
 | [0019](0019-tabs-and-split-panes.md) | Organise sessions in tabs of split panes | Accepted |
 | [0020](0020-toml-configuration.md) | Configure Woop with a TOML file that reloads while it runs | Accepted |
 | [0021](0021-configurable-keybindings.md) | Let the configuration change Woop's shortcuts | Accepted |
+| [0022](0022-working-directory-from-signed-marks.md) | Open new panes in the shell's directory, reported in signed marks | Accepted |

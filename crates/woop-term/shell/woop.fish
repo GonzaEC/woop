@@ -30,7 +30,14 @@ if not set -q __woop_integrated
 
     function fish_prompt
         set -l last_status $status
-        printf '\e]133;A;woop=%s\a' "$__woop_token"
+        # The current directory, percent-encoded, so that new panes open here;
+        # left out when too long for the mark.
+        set -l directory (string escape --style=url -- "$PWD")
+        if test (string length -- "$directory") -le 3800
+            printf '\e]133;A;woop=%s;cwd=%s\a' "$__woop_token" "$directory"
+        else
+            printf '\e]133;A;woop=%s\a' "$__woop_token"
+        end
         if functions -q __woop_original_prompt
             # Restore the status so the original prompt can show it.
             __woop_return $last_status

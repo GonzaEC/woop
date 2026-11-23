@@ -281,13 +281,16 @@ proptest! {
 
     /// With a session token required, output that does not know it can
     /// never create a block or a prompt for the command editor, whatever
-    /// marks and token guesses it contains (ADR 0018).
+    /// marks and token guesses it contains (ADR 0018), nor choose the
+    /// directory new panes open in (ADR 0022).
     #[test]
     fn output_cannot_forge_signed_marks(
         pieces in prop::collection::vec(
             prop_oneof![
                 token(),
                 Just(b"\x1b]133;A;woop=00000000000000000000000000000000\x07".to_vec()),
+                Just(b"\x1b]133;A;cwd=/tmp\x07".to_vec()),
+                Just(b"\x1b]133;A;woop=0;cwd=C:%5Cevil\x07".to_vec()),
                 Just(b"\x1b]133;B;woop=\x07".to_vec()),
                 Just(b"\x1b]133;D;0;woop=0\x1b\\".to_vec()),
                 Just(b"$ ".to_vec()),
@@ -303,6 +306,7 @@ proptest! {
         prop_assert!(term.blocks().is_empty());
         prop_assert_eq!(term.screen().command_prompt, None);
         prop_assert_eq!(term.awaiting_command(), None);
+        prop_assert_eq!(term.current_directory(), None);
     }
 }
 

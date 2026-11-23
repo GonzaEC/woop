@@ -28,8 +28,9 @@ pub(crate) enum Mark {
 }
 
 /// Longest OSC payload the scanner buffers. Longer sequences cannot be
-/// marks and are skipped.
-const MAX_PAYLOAD: usize = 256;
+/// marks and are skipped. Room for a prompt mark with a long, encoded
+/// working directory (ADR 0022).
+const MAX_PAYLOAD: usize = 4096;
 
 /// Longest OSC sequence allowed to reach the emulator. Legitimate ones
 /// (titles, links, marks) are far shorter.
@@ -75,6 +76,9 @@ pub(crate) struct MarkScanner {
     /// When set, OSC 133 marks count only if they carry this token as a
     /// `woop=<token>` option (ADR 0018).
     token: Option<Vec<u8>>,
+    /// The working directory reported by the last accepted prompt mark,
+    /// until taken (ADR 0022).
+    directory: Option<String>,
 }
 
 /// Shows only the scanner's state: the token, and the payload of a mark
@@ -98,6 +102,7 @@ impl Default for MarkScanner {
             csi_after_first: false,
             csi_other: false,
             token: None,
+            directory: None,
         }
     }
 }
@@ -113,6 +118,11 @@ impl MarkScanner {
     /// From now on, accepts only marks that carry `token`.
     pub(crate) fn require_token(&mut self, token: &[u8]) {
         self.token = Some(token.to_vec());
+    }
+
+    /// The working directory reported since the last call, if any.
+    pub(crate) fn take_directory(&mut self) -> Option<String> {
+        self.directory.take()
     }
 
     /// Parses a complete OSC payload into a mark, checking the token.
@@ -187,6 +197,11 @@ impl MarkScanner {
                 (State::Csi, _) => State::Csi,
                 (State::Osc, BEL) => {
                     if let Some(mark) = self.mark(&self.payload) {
+                        if mark == Mark::PromptStart
+                            && let Some(directory) = directory(&self.payload)
+                        {
+                            self.directory = Some(directory);
+                        }
                         marks.push((index + 1, mark));
                     }
                     State::Ground
@@ -203,6 +218,11 @@ impl MarkScanner {
                 }
                 (State::OscEscape, b'\\') => {
                     if let Some(mark) = self.mark(&self.payload) {
+                        if mark == Mark::PromptStart
+                            && let Some(directory) = directory(&self.payload)
+                        {
+                            self.directory = Some(directory);
+                        }
                         marks.push((index + 1, mark));
                     }
                     State::Ground
@@ -253,6 +273,38 @@ fn parse(payload: &[u8], token: Option<&[u8]>) -> Option<Mark> {
         _ => return None,
     };
     Some(mark)
+}
+
+/// The working directory in an accepted prompt mark's `cwd=` option
+/// (ADR 0022): percent-decoded, valid UTF-8 without control characters,
+/// and an absolute path. Anything else is ignored.
+fn directory(payload: &[u8]) -> Option<String> {
+    let encoded = payload
+        .split(|&byte| byte == b';')
+        .skip(2)
+        .find_map(|field| field.strip_prefix(b"cwd="))?;
+    let directory = String::from_utf8(percent_decode(encoded)?).ok()?;
+    let valid = !directory.is_empty()
+        && !directory.chars().any(char::is_control)
+        && std::path::Path::new(&directory).is_absolute();
+    valid.then_some(directory)
+}
+
+/// Decodes `%XX` escapes; any other `%` makes the text invalid.
+fn percent_decode(text: &[u8]) -> Option<Vec<u8>> {
+    let hex = |byte: u8| char::from(byte).to_digit(16);
+    let mut decoded = Vec::with_capacity(text.len());
+    let mut bytes = text.iter();
+    while let Some(&byte) = bytes.next() {
+        if byte == b'%' {
+            let high = hex(*bytes.next()?)?;
+            let low = hex(*bytes.next()?)?;
+            decoded.push(u8::try_from(high * 16 + low).ok()?);
+        } else {
+            decoded.push(byte);
+        }
+    }
+    Some(decoded)
 }
 
 #[cfg(test)]
@@ -322,6 +374,70 @@ mod tests {
         ] {
             assert_eq!(parse(forged, token), None, "{forged:?}");
         }
+    }
+
+    /// Percent-encodes as the integration scripts do.
+    fn encode(text: &str) -> String {
+        text.bytes()
+            .map(|byte| {
+                if byte.is_ascii_alphanumeric() || b"-._~/:\\".contains(&byte) {
+                    char::from(byte).to_string()
+                } else {
+                    format!("%{byte:02X}")
+                }
+            })
+            .collect()
+    }
+
+    /// An absolute path on this platform, with characters that need encoding.
+    fn absolute(name: &str) -> String {
+        std::env::temp_dir()
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn signed_prompt_marks_report_the_directory() {
+        let directory = absolute("my dir;with%odd ñ");
+        let mut scanner = MarkScanner::default();
+        scanner.require_token(b"t0k");
+        let mark = format!("\x1b]133;A;woop=t0k;cwd={}\x07", encode(&directory));
+        assert_eq!(scanner.scan(mark.as_bytes()).len(), 1);
+        assert_eq!(scanner.take_directory(), Some(directory.clone()));
+        assert_eq!(scanner.take_directory(), None, "taken once");
+
+        // A forged mark, without the token, sets nothing.
+        let forged = format!("\x1b]133;A;cwd={}\x07", encode(&absolute("evil")));
+        scanner.scan(forged.as_bytes());
+        assert_eq!(scanner.take_directory(), None);
+    }
+
+    #[test]
+    fn invalid_directories_are_ignored() {
+        let check = |encoded: &str| {
+            let mut scanner = MarkScanner::default();
+            scanner.scan(format!("\x1b]133;A;cwd={encoded}\x07").as_bytes());
+            scanner.take_directory()
+        };
+        // Relative, empty, broken escapes, control characters, not UTF-8.
+        for encoded in ["relative/dir", "", "%zz", "%4", "%0A", "%FF%FE"] {
+            assert_eq!(check(encoded), None, "{encoded:?}");
+        }
+        let with_newline = format!("{}%0A", encode(&absolute("x")));
+        assert_eq!(check(&with_newline), None);
+        // Only prompt-start marks report a directory.
+        let mut scanner = MarkScanner::default();
+        scanner.scan(format!("\x1b]133;B;cwd={}\x07", encode(&absolute("x"))).as_bytes());
+        assert_eq!(scanner.take_directory(), None);
+    }
+
+    #[test]
+    fn long_directories_fit_up_to_the_payload_limit() {
+        let directory = absolute(&"d".repeat(MAX_PAYLOAD - 200));
+        let mut scanner = MarkScanner::default();
+        scanner.scan(format!("\x1b]133;A;cwd={}\x07", encode(&directory)).as_bytes());
+        assert_eq!(scanner.take_directory(), Some(directory));
     }
 
     #[test]
