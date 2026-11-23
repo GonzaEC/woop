@@ -92,7 +92,31 @@ fn check_shell(command: ShellCommand, failing: &str, failing_code: i32, print_to
         screen.lines().any(|line| line.trim_end() == "[]"),
         "the token reached the environment; screen was:\n{screen}"
     );
+    reports_its_directory(&mut session);
     submit_from_editor(&mut session);
+}
+
+/// After `cd`, the shell reports its new directory with the next prompt,
+/// even with characters that need encoding (ADR 0022).
+fn reports_its_directory(session: &mut Session) {
+    let directory = std::env::temp_dir().join(format!("woop dir;ñ%-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("create directory");
+    let expected = directory.canonicalize().expect("canonical directory");
+    // Single quotes keep spaces and `;` literal in PowerShell, bash and zsh.
+    run_block(session, &format!("cd '{}'", directory.display()));
+    let reported = session
+        .wait_until(TIMEOUT, |term| {
+            term.current_directory()
+                .and_then(|reported| std::path::Path::new(reported).canonicalize().ok())
+                .is_some_and(|reported| reported == expected)
+        })
+        .expect("pump");
+    assert!(
+        reported,
+        "reported {:?}, expected {}",
+        session.terminal().current_directory(),
+        directory.display()
+    );
 }
 
 /// The shell reports that it waits for a command with an empty line, so
@@ -211,6 +235,45 @@ fn bash_signs_a_prompt_that_has_its_own_marks() {
         run_block(&mut session, "echo woop"),
         ("echo woop".to_owned(), Some(0))
     );
+}
+
+/// Changes made to the prompt after Woop wrapped it (a virtual environment
+/// prepends its name) survive the next prompt, which reports the directory.
+#[cfg(unix)]
+fn keeps_changes_to_the_prompt(command: ShellCommand) {
+    let mut session = start(command);
+    run_block(&mut session, "PS1=\"(venv)$PS1\"");
+    run_block(&mut session, "echo after");
+    let screen = session.terminal().screen_text();
+    assert!(
+        screen
+            .lines()
+            .filter(|line| line.contains("(venv)"))
+            .count()
+            >= 2,
+        "the prompt lost its change; screen was:\n{screen}"
+    );
+    reports_its_directory(&mut session);
+}
+
+#[cfg(unix)]
+#[test]
+fn bash_keeps_changes_to_the_prompt() {
+    let home = empty_home("bash-venv");
+    std::fs::write(home.join(".bashrc"), "PS1='$ '\n").expect("write .bashrc");
+    keeps_changes_to_the_prompt(ShellCommand::new("bash").env("HOME", &home));
+}
+
+#[cfg(unix)]
+#[test]
+fn zsh_keeps_changes_to_the_prompt() {
+    if !in_path("zsh") {
+        eprintln!("zsh is not installed; skipping");
+        return;
+    }
+    let home = empty_home("zsh-venv");
+    std::fs::write(home.join(".zshrc"), "PS1='$ '\n").expect("write .zshrc");
+    keeps_changes_to_the_prompt(ShellCommand::new("zsh").env("HOME", &home));
 }
 
 #[cfg(unix)]

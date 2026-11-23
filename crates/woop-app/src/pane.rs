@@ -172,6 +172,16 @@ impl Pane {
         self.session.is_closed()
     }
 
+    /// The directory the shell reported it is in (ADR 0022), if it still
+    /// exists, for new panes to start there.
+    pub fn current_directory(&self) -> Option<std::path::PathBuf> {
+        self.session
+            .terminal()
+            .current_directory()
+            .map(std::path::PathBuf::from)
+            .filter(|directory| directory.is_absolute() && directory.is_dir())
+    }
+
     /// Whether closing the pane could end a running command, so the user
     /// must confirm. Without shell integration Woop cannot tell, so it
     /// always asks.

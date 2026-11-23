@@ -684,10 +684,11 @@ impl Woop {
         let output = self.output.clone()?;
         let id = self.next_id;
         self.next_id += 1;
-        let size = self
-            .focused()
-            .and_then(|focused| self.panes.get(&focused))
-            .map_or(INITIAL_SIZE, Pane::size);
+        let focused = self.focused().and_then(|focused| self.panes.get(&focused));
+        let size = focused.map_or(INITIAL_SIZE, Pane::size);
+        // Where the focused pane's shell is, as it reported in a signed mark
+        // (ADR 0022); otherwise the default directory.
+        let directory = focused.and_then(Pane::current_directory);
         let notify = move || {
             let _ = output.unbounded_send(id);
         };
@@ -699,6 +700,10 @@ impl Woop {
                     command.arg(arg)
                 }),
             None => ShellCommand::default_shell(),
+        };
+        let command = match directory {
+            Some(directory) => command.cwd(directory),
+            None => command,
         };
         match shell_integration::spawn(command, size, notify) {
             Ok(session) => {

@@ -26,19 +26,67 @@ if [ -z "$__woop_integrated" ]; then
         return "$__woop_status"
     }
 
+    # Percent-encodes $1, byte by byte, so that a directory cannot end or
+    # change the mark it is sent in. Called only in a command substitution,
+    # so the locale set here stays in that subshell.
+    __woop_encode() {
+        # Read bytes, not characters. bash 3.2 (macOS) may keep reading
+        # characters even so (it ignored `local LC_ALL=C`), which the probe
+        # tells: each character's UTF-8 bytes are then encoded here.
+        LC_ALL=C
+        local text=$1 encoded= char code byte i probe=$'\xc3\xb1' bytes
+        local by_character=
+        [ "${#probe}" -eq 1 ] && by_character=1
+        for (( i = 0; i < ${#text}; i++ )); do
+            char=${text:i:1}
+            case $char in
+                [a-zA-Z0-9.~_/-]) encoded+=$char; continue ;;
+            esac
+            printf -v code '%d' "'$char"
+            if [ -z "$by_character" ] || (( code < 0x80 )); then
+                bytes=$(( code & 0xFF ))
+            elif (( code < 0x800 )); then
+                bytes="$(( 0xC0 | code >> 6 )) $(( 0x80 | (code & 0x3F) ))"
+            elif (( code < 0x10000 )); then
+                bytes="$(( 0xE0 | code >> 12 )) $(( 0x80 | (code >> 6 & 0x3F) )) $(( 0x80 | (code & 0x3F) ))"
+            else
+                bytes="$(( 0xF0 | code >> 18 )) $(( 0x80 | (code >> 12 & 0x3F) )) $(( 0x80 | (code >> 6 & 0x3F) )) $(( 0x80 | (code & 0x3F) ))"
+            fi
+            for byte in $bytes; do
+                printf -v char '%%%02X' "$byte"
+                encoded+=$char
+            done
+        done
+        printf '%s' "$encoded"
+    }
+
     __woop_prompt() {
         if [ -n "$__woop_prompted" ]; then
             printf '\033]133;D;%s;woop=%s\007' "$__woop_status" "$__woop_token"
         fi
         __woop_prompted=1
         __woop_at_prompt=1
-        # Wrap the prompt again if the user's PROMPT_COMMAND rebuilt it. A
-        # prompt with its own, unsigned marks is wrapped too: Woop ignores
-        # those.
-        case "$PS1" in
-            *"woop=$__woop_token"*) ;;
-            *) PS1='\[\033]133;A;woop='"$__woop_token"'\007\]'"$PS1"'\[\033]133;B;woop='"$__woop_token"'\007\]' ;;
-        esac
+        # The current directory, so that new panes open here. Left out when
+        # too long for the mark, which would then be dropped as a whole.
+        local directory
+        directory=$(__woop_encode "$PWD")
+        if [ "${#directory}" -gt 3800 ]; then
+            directory=
+        else
+            directory=";cwd=$directory"
+        fi
+        # Take out the marks added at the last prompt, wherever they are now,
+        # so that changes others made to the prompt stay (a virtual
+        # environment's name), then wrap it again with the current directory.
+        # A prompt rebuilt from scratch, or with its own unsigned marks, is
+        # simply wrapped: Woop ignores unsigned marks.
+        if [ -n "$__woop_prefix" ]; then
+            PS1=${PS1/"$__woop_prefix"/}
+            PS1=${PS1/"$__woop_suffix"/}
+        fi
+        __woop_prefix='\[\033]133;A;woop='"$__woop_token$directory"'\007\]'
+        __woop_suffix='\[\033]133;B;woop='"$__woop_token"'\007\]'
+        PS1=$__woop_prefix$PS1$__woop_suffix
         return "$__woop_status"
     }
 

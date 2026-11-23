@@ -156,6 +156,9 @@ pub struct Terminal {
     /// end. Kept apart from the blocks, which output can make Woop forget
     /// (clearing the history, scrolling past it).
     command_running: bool,
+    /// The working directory the shell reported in its last signed prompt
+    /// mark (ADR 0022).
+    current_directory: Option<String>,
 }
 
 /// Length of the incomplete UTF-8 character at the end of `bytes`: a lead
@@ -249,6 +252,7 @@ impl Terminal {
             reflowed_unseen: false,
             utf8_carry: Vec::new(),
             command_running: false,
+            current_directory: None,
         }
     }
 
@@ -297,6 +301,9 @@ impl Terminal {
             start = end;
         }
         self.feed(&bytes[start..]);
+        if let Some(directory) = self.marks.take_directory() {
+            self.current_directory = Some(directory);
+        }
     }
 
     /// Forgets blocks after the output cleared the scrollback. The clear is
@@ -394,6 +401,13 @@ impl Terminal {
             self.size = size;
             self.update_history(true);
         }
+    }
+
+    /// The working directory the shell reported with its last prompt, in a
+    /// mark carrying the session token (ADR 0022): an absolute path, not
+    /// checked to exist. `None` without shell integration.
+    pub fn current_directory(&self) -> Option<&str> {
+        self.current_directory.as_deref()
     }
 
     /// Whether the shell reported that a command started and has not
