@@ -16,7 +16,7 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
   - Integration files: reject a relative `XDG_CACHE_HOME`, check that the directory and its parents belong to the user and are not writable by others, and open files without following symbolic links.
   - Ask before pasting several lines when the application has not enabled bracketed paste.
   - Selecting text on a fold summary selects the hidden first line; make summaries unselectable or select the whole fold.
-  - Alt+click is a window-dragging gesture on many Linux desktops; offer another way to copy a block's command (command palette or context menu).
+  - Alt+click is a window-dragging gesture on many Linux desktops; the command palette copies the last command, but there is no other way to copy an older block's command (a context menu).
   - bash 5.1+: elements of an array `PROMPT_COMMAND` after the first run after Woop's prompt hook.
   - End-to-end tests for fish and for PowerShell 7 with a profile that defines its own prompt.
   - Cache fold positions between snapshots, and walk only the view in `visible()`.
@@ -57,7 +57,7 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
   - [x] Milestone audit: security, performance and general reviews, long robustness runs. Fixed: keys are decided when handled, so keys typed just after Enter reach the shell as typed and focus is never lost; only keys that keep the shell's line empty reach it from the editor; AltGr characters are typed instead of running shortcuts; the editor's text is bounded (a long single line made every key slow); the panel shrinks only at a new prompt; clearer panel states ([ADR 0017](adr/0017-command-editor-key-handling.md)). Low findings are listed in the quality track.
 - [ ] **5. Workspace.**
   - [x] Tabs and split panes: each pane runs its own shell with its own command editor; new tab, close pane (asking again when a command is running), next and previous tab, split right or down, move the focus, drag the splits ([ADR 0019](adr/0019-tabs-and-split-panes.md)).
-  - [ ] Command palette.
+  - [x] Command palette (Ctrl+Shift+P, Cmd+Shift+P on macOS): search and run tab, pane, block, clipboard and configuration commands; while it is open no key reaches a shell.
   - [x] TOML configuration with live reload: font, shell, colours and two built-in themes ([ADR 0020](adr/0020-toml-configuration.md), [configuration](configuration.md)).
   - [ ] Configurable keybindings.
   - [ ] New panes start in the focused pane's directory (the shell reports it with OSC 7).

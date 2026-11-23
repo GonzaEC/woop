@@ -48,6 +48,10 @@ Command blocks rely on the shell emitting OSC 133 semantic prompt marks around t
 
 `Terminal::screen` builds each snapshot from a list of view rows. With no collapsed block this is simply the grid lines in view; with collapsed blocks, each hidden output becomes one summary row, and the view is filled from above at the bottom of the scrollback or from its top line when scrolled back. Scrolling, jumping between blocks and mapping mouse positions to text all go through the same rows, so they agree with what is drawn. The rows hidden by folds are found in one walk over the grid per snapshot.
 
+## Command palette
+
+The command palette (`palette.rs`) lists Woop's actions and runs the one chosen. While it is open the window reads the keyboard itself, through iced's keyboard subscription, rather than through a text field: the panes stop taking keys and any keyboard input already read by a pane is dropped, so nothing typed into the palette reaches a shell. Commands that act on a pane run only on the pane focused when the palette opened. The search does not use input methods.
+
 ## Command editor
 
 When the shell waits for a command with an empty line (`Screen::awaiting_command`, from the marks and the cursor position), Woop's own editor, an iced text editor in a panel under the grid, turns on and takes the keys for the rest of that prompt (`Screen::command_prompt`), even if output moves the cursor ([ADR 0016](adr/0016-command-editor-at-the-prompt.md)). `gate::Gate` tracks which prompt it belongs to. The widget only passes key presses on; the application decides what each one means when it handles it (`keys::editor_key`), with its state at that moment ([ADR 0017](adr/0017-command-editor-key-handling.md)). Enter sends the text through `input::encode_command` (sanitised like a paste, then a carriage return), asking for a second Enter if the shell's line may no longer be empty; Tab or Ctrl+R hand the text to the shell's own line editor for completion and history search. Submitted commands are kept in an in-memory `History`. Without shell integration, in full-screen applications and while a command runs, keys reach the shell as before.
