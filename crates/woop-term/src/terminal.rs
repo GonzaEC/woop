@@ -152,6 +152,10 @@ pub struct Terminal {
     /// The start of a character cut off at the end of the last output,
     /// waiting for the rest of it.
     utf8_carry: Vec<u8>,
+    /// The shell reported that a command started and has not reported its
+    /// end. Kept apart from the blocks, which output can make Woop forget
+    /// (clearing the history, scrolling past it).
+    command_running: bool,
 }
 
 /// Length of the incomplete UTF-8 character at the end of `bytes`: a lead
@@ -244,6 +248,7 @@ impl Terminal {
             history: 0,
             reflowed_unseen: false,
             utf8_carry: Vec::new(),
+            command_running: false,
         }
     }
 
@@ -272,6 +277,11 @@ impl Terminal {
         let mut start = 0;
         for (end, mark) in self.marks.scan(bytes) {
             self.feed(&bytes[start..end]);
+            match mark {
+                Mark::OutputStart => self.command_running = true,
+                Mark::CommandFinished(_) | Mark::PromptStart => self.command_running = false,
+                _ => {}
+            }
             let alt_screen = self.term.mode().contains(TermMode::ALT_SCREEN);
             if mark == Mark::SequenceTooLong {
                 // CAN cancels the sequence in the emulator, which would
@@ -384,6 +394,14 @@ impl Terminal {
             self.size = size;
             self.update_history(true);
         }
+    }
+
+    /// Whether the shell reported that a command started and has not
+    /// reported its end. Unlike the blocks, this survives output that clears
+    /// the history or scrolls the command out of it, so it can guard closing
+    /// a running command. Always `false` without shell integration.
+    pub fn command_running(&self) -> bool {
+        self.command_running
     }
 
     /// Returns the command blocks, oldest first. Blocks are only produced

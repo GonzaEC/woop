@@ -28,9 +28,11 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
   - Alt with a letter types the letter in the editor; consider ignoring it, as the shell's Alt shortcuts do not apply there.
   - `Terminal::screen` takes about 90 µs at 50x200 but 700 µs at 100x300 (three times the cells, eight times the time); find out why.
 - [ ] **Hardening from the mark token review** (low findings):
-  - Requiring the token is a separate call after `Session::spawn`; with tabs, make sessions started with the integration require it themselves, so no caller can forget it.
   - bash and zsh keep the token in `PS1`; a configuration that exports `PS1` passes it to programs. Print the marks from the prompt hooks instead.
   - Consider taking the token's bits from the operating system directly instead of relying on `RandomState`.
+- [ ] **Hardening from the tabs and splits review** (low findings):
+  - `Session::spawn` still accepts unsigned marks; make the scanner reject marks until a token is set, with an explicit choice for sessions without integration.
+  - Alt+Left and Alt+Right move the focus between panes and so are taken from programs that use them; make them configurable.
 
 ## Milestones
 
@@ -49,7 +51,11 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
 - [x] **4. Editor-like input.**
   - [x] Command editor at the prompt: multi-line text with a free cursor, mouse and keyboard selection, copy, cut and paste; Enter runs, Shift+Enter breaks the line; in-memory history on Up and Down; Tab and Ctrl+R hand off to the shell's own completion and history search ([ADR 0016](adr/0016-command-editor-at-the-prompt.md)).
   - [x] Milestone audit: security, performance and general reviews, long robustness runs. Fixed: keys are decided when handled, so keys typed just after Enter reach the shell as typed and focus is never lost; only keys that keep the shell's line empty reach it from the editor; AltGr characters are typed instead of running shortcuts; the editor's text is bounded (a long single line made every key slow); the panel shrinks only at a new prompt; clearer panel states ([ADR 0017](adr/0017-command-editor-key-handling.md)). Low findings are listed in the quality track.
-- [ ] **5. Workspace.** Tabs, splits, command palette, TOML configuration with live reload, themes.
+- [ ] **5. Workspace.**
+  - [x] Tabs and split panes: each pane runs its own shell with its own command editor; new tab, close pane (asking again when a command is running), next and previous tab, split right or down, move the focus, drag the splits ([ADR 0019](adr/0019-tabs-and-split-panes.md)).
+  - [ ] Command palette.
+  - [ ] TOML configuration with live reload, themes.
+  - [ ] New panes start in the focused pane's directory (the shell reports it with OSC 7).
 - [ ] **6. Completions and assistant.** History and path completions, command specifications, optional AI providers (own API key or local model).
 - [ ] **7. Interface design.** One design pass over the whole interface once its features are in place: how the command editor relates to the prompt and the blocks (today it sits far from the prompt on a mostly empty screen, its marker is small and faint, and the panel does not read as part of the current block), blocks, tabs, panels and the default theme.
 - [ ] **8. Distribution.** Signed installers and packages for each platform, published from CI.
