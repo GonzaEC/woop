@@ -79,7 +79,7 @@ Automated tests cannot judge how the window looks or feels (rendering, keyboard,
   - read the session token from `WOOP_TOKEN` into an unexported variable (hexadecimal digits only), remove it from the environment, and add `woop=<token>` to every mark: Woop ignores unsigned marks ([ADR 0018](docs/adr/0018-per-session-mark-token.md));
   - report the current directory in the prompt-start mark as `cwd=<percent-encoded path>`, encoding every byte except letters, digits and `-._~/` (and `%` doubled in zsh prompts) ([ADR 0022](docs/adr/0022-working-directory-from-signed-marks.md));
   - keep LF line endings (`.gitattributes` enforces it);
-  - support the oldest shells Woop targets: Windows PowerShell 5.1 has no `` `e `` escape (use `[char]27`), and bash 3.2 (macOS) has no `PS0`, so commands are marked from the `DEBUG` trap, which does not fire for subshells such as `( ... )`.
+  - support the oldest shells Woop targets: Windows PowerShell 5.1 has no `` `e `` escape (use `[char]27`), and bash 3.2 (macOS) has no `PS0`, so commands are marked from the `DEBUG` trap, which does not fire for subshells such as `( ... )`. bash 3.2 also keeps reading characters rather than bytes after `local LC_ALL=C`: byte-wise code must not rely on it (test non-ASCII text; CI runs bash 3.2 on macOS).
 
   `crates/woop-term/tests/shell_integration.rs` runs the scripts in real shells. When developing on Windows, the bash and zsh scripts are only exercised by CI; check its logs to confirm those tests ran.
 
