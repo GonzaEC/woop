@@ -32,7 +32,8 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
   - Consider taking the token's bits from the operating system directly instead of relying on `RandomState`.
 - [ ] **Hardening from the tabs and splits review** (low findings):
   - `Session::spawn` still accepts unsigned marks; make the scanner reject marks until a token is set, with an explicit choice for sessions without integration.
-  - Alt+Left and Alt+Right move the focus between panes and so are taken from programs that use them; make them configurable.
+- [ ] **Hardening from the shortcuts review** (low findings):
+  - Shortcuts that are taken first by the fixed keys (Ctrl+Shift+Insert, Ctrl+Shift+Page Up) never run; report them as configuration errors. Report macOS Option+character shortcuts instead of ignoring them silently.
 - [ ] **Hardening from the configuration review** (low findings):
   - Unix: also require the configuration file and every directory above it to belong to the user (or root), refuse writable ancestors without the sticky bit, and treat a failure to check a directory as a refusal.
   - Windows: check the owner or access rights of the configuration file instead of assuming `%APPDATA%` is private (it can live on a network share).
@@ -59,7 +60,7 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
   - [x] Tabs and split panes: each pane runs its own shell with its own command editor; new tab, close pane (asking again when a command is running), next and previous tab, split right or down, move the focus, drag the splits ([ADR 0019](adr/0019-tabs-and-split-panes.md)).
   - [x] Command palette (Ctrl+Shift+P, Cmd+Shift+P on macOS): search and run tab, pane, block, clipboard and configuration commands; while it is open no key reaches a shell.
   - [x] TOML configuration with live reload: font, shell, colours and two built-in themes ([ADR 0020](adr/0020-toml-configuration.md), [configuration](configuration.md)).
-  - [ ] Configurable keybindings.
+  - [x] Configurable shortcuts: the `[keys]` table gives any palette action a shortcut or removes it, with the platform's copy and paste keys fixed ([ADR 0021](adr/0021-configurable-keybindings.md)).
   - [ ] New panes start in the focused pane's directory (the shell reports it with OSC 7).
 - [ ] **6. Completions and assistant.** History and path completions, command specifications, optional AI providers (own API key or local model).
 - [ ] **7. Interface design.** One design pass over the whole interface once its features are in place: how the command editor relates to the prompt and the blocks (today it sits far from the prompt on a mostly empty screen, its marker is small and faint, and the panel does not read as part of the current block), blocks, tabs, panels and the default theme.

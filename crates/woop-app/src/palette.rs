@@ -7,151 +7,80 @@
 use iced::keyboard::key::Named;
 use iced::keyboard::{Key, Modifiers};
 
+use crate::bindings::Bindings;
 use crate::keys::Shortcuts;
 
 /// Longest search text kept.
 const MAX_QUERY_CHARS: usize = 100;
 
-/// An action the palette can run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Command {
-    /// Open a new tab.
-    NewTab,
-    /// Close the focused pane.
-    ClosePane,
-    /// Show the next tab.
-    NextTab,
-    /// Show the previous tab.
-    PreviousTab,
-    /// Split the focused pane, with the new pane on the right.
-    SplitRight,
-    /// Split the focused pane, with the new pane below.
-    SplitDown,
-    /// Focus the pane on the left.
-    FocusLeft,
-    /// Focus the pane on the right.
-    FocusRight,
-    /// Focus the pane above.
-    FocusUp,
-    /// Focus the pane below.
-    FocusDown,
-    /// Copy the last finished command.
-    CopyLastCommandLine,
-    /// Copy the output of the last finished command.
-    CopyLastOutput,
-    /// Collapse or expand the output of the last finished command.
-    ToggleLastOutput,
-    /// Move the view to the previous command block.
-    PreviousBlock,
-    /// Move the view to the next command block.
-    NextBlock,
-    /// Copy the selected text.
-    CopySelection,
-    /// Paste the clipboard.
-    Paste,
-    /// Move the view back to the latest output.
-    ScrollToBottom,
-    /// Copy the path of the configuration file.
-    CopyConfigPath,
-    /// Read the configuration file again now.
-    ReloadConfig,
+/// An action the palette can run: the actions that can also be given a
+/// shortcut in the configuration (ADR 0021).
+pub use woop_config::Action as Command;
+
+/// The commands the palette lists, in order: every action except opening
+/// the palette itself.
+fn listed() -> impl Iterator<Item = Command> {
+    Command::ALL
+        .into_iter()
+        .filter(|&command| command != Command::CommandPalette)
 }
 
-impl Command {
-    /// Every command, in the order the palette lists them.
-    pub const ALL: [Self; 20] = [
-        Self::NewTab,
-        Self::ClosePane,
-        Self::NextTab,
-        Self::PreviousTab,
-        Self::SplitRight,
-        Self::SplitDown,
-        Self::FocusLeft,
-        Self::FocusRight,
-        Self::FocusUp,
-        Self::FocusDown,
-        Self::CopyLastCommandLine,
-        Self::CopyLastOutput,
-        Self::ToggleLastOutput,
-        Self::PreviousBlock,
-        Self::NextBlock,
-        Self::CopySelection,
-        Self::Paste,
-        Self::ScrollToBottom,
-        Self::CopyConfigPath,
-        Self::ReloadConfig,
-    ];
-
-    /// The name shown and searched.
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::NewTab => "New tab",
-            Self::ClosePane => "Close pane",
-            Self::NextTab => "Next tab",
-            Self::PreviousTab => "Previous tab",
-            Self::SplitRight => "Split pane right",
-            Self::SplitDown => "Split pane down",
-            Self::FocusLeft => "Focus pane on the left",
-            Self::FocusRight => "Focus pane on the right",
-            Self::FocusUp => "Focus pane above",
-            Self::FocusDown => "Focus pane below",
-            Self::CopyLastCommandLine => "Copy last command",
-            Self::CopyLastOutput => "Copy last command's output",
-            Self::ToggleLastOutput => "Collapse or expand last command's output",
-            Self::PreviousBlock => "Go to previous command",
-            Self::NextBlock => "Go to next command",
-            Self::CopySelection => "Copy selection",
-            Self::Paste => "Paste",
-            Self::ScrollToBottom => "Scroll to the latest output",
-            Self::CopyConfigPath => "Copy configuration file path",
-            Self::ReloadConfig => "Reload configuration",
-        }
+/// The name shown and searched.
+pub fn label(command: Command) -> &'static str {
+    match command {
+        Command::NewTab => "New tab",
+        Command::ClosePane => "Close pane",
+        Command::NextTab => "Next tab",
+        Command::PreviousTab => "Previous tab",
+        Command::SplitRight => "Split pane right",
+        Command::SplitDown => "Split pane down",
+        Command::FocusLeft => "Focus pane on the left",
+        Command::FocusRight => "Focus pane on the right",
+        Command::FocusUp => "Focus pane above",
+        Command::FocusDown => "Focus pane below",
+        Command::CommandPalette => "Command palette",
+        Command::CopyLastCommandLine => "Copy last command",
+        Command::CopyLastOutput => "Copy last command's output",
+        Command::ToggleLastOutput => "Collapse or expand last command's output",
+        Command::PreviousBlock => "Go to previous command",
+        Command::NextBlock => "Go to next command",
+        Command::CopySelection => "Copy selection",
+        Command::Paste => "Paste",
+        Command::ScrollToBottom => "Scroll to the latest output",
+        Command::CopyConfigPath => "Copy configuration file path",
+        Command::ReloadConfig => "Reload configuration",
     }
+}
 
-    /// The keyboard shortcut for the command, if it has one.
-    pub fn shortcut(self, shortcuts: Shortcuts) -> Option<&'static str> {
-        let mac = shortcuts == Shortcuts::MacOs;
-        let pick = |other: &'static str, macos: &'static str| Some(if mac { macos } else { other });
-        match self {
-            Self::NewTab => pick("Ctrl+Shift+T", "Cmd+T"),
-            Self::ClosePane => pick("Ctrl+Shift+W", "Cmd+W"),
-            Self::NextTab => Some("Ctrl+Tab"),
-            Self::PreviousTab => Some("Ctrl+Shift+Tab"),
-            Self::SplitRight => pick("Ctrl+Shift+D", "Cmd+D"),
-            Self::SplitDown => pick("Ctrl+Shift+E", "Cmd+Shift+D"),
-            Self::FocusLeft => pick("Alt+Left", "Cmd+Option+Left"),
-            Self::FocusRight => pick("Alt+Right", "Cmd+Option+Right"),
-            Self::FocusUp => pick("Alt+Up", "Cmd+Option+Up"),
-            Self::FocusDown => pick("Alt+Down", "Cmd+Option+Down"),
-            Self::PreviousBlock => pick("Ctrl+Shift+Up", "Cmd+Up"),
-            Self::NextBlock => pick("Ctrl+Shift+Down", "Cmd+Down"),
-            Self::CopySelection => match shortcuts {
-                Shortcuts::Windows => Some("Ctrl+C"),
-                Shortcuts::Unix => Some("Ctrl+Shift+C"),
-                Shortcuts::MacOs => Some("Cmd+C"),
-            },
-            Self::Paste => match shortcuts {
-                Shortcuts::Windows => Some("Ctrl+V"),
-                Shortcuts::Unix => Some("Ctrl+Shift+V"),
-                Shortcuts::MacOs => Some("Cmd+V"),
-            },
-            Self::CopyLastCommandLine
-            | Self::CopyLastOutput
-            | Self::ToggleLastOutput
-            | Self::ScrollToBottom
-            | Self::CopyConfigPath
-            | Self::ReloadConfig => None,
-        }
+/// The shortcut shown for a command: the one in effect, from the bindings,
+/// or for copying and pasting the platform's own keys.
+pub fn shortcut(command: Command, shortcuts: Shortcuts, bindings: &Bindings) -> Option<String> {
+    let fixed = |windows: &str, unix: &str, macos: &str| {
+        Some(
+            match shortcuts {
+                Shortcuts::Windows => windows,
+                Shortcuts::Unix => unix,
+                Shortcuts::MacOs => macos,
+            }
+            .to_owned(),
+        )
+    };
+    match command {
+        Command::CopySelection => fixed("Ctrl+C", "Ctrl+Shift+C", "Cmd+C"),
+        Command::Paste => fixed("Ctrl+V", "Ctrl+Shift+V", "Cmd+V"),
+        _ => bindings
+            .chord(command)
+            .map(|chord| chord.label(shortcuts == Shortcuts::MacOs)),
     }
+}
 
-    /// Whether every word of `query` appears in the label, ignoring case.
-    fn matches(self, query: &str) -> bool {
-        let label = self.label().to_lowercase();
-        query
-            .to_lowercase()
-            .split_whitespace()
-            .all(|word| label.contains(word))
-    }
+/// Whether every word of `query` appears in the label, ignoring case.
+fn matches(command: Command, query: &str) -> bool {
+    let label = label(command).to_lowercase();
+    query
+        .to_lowercase()
+        .split_whitespace()
+        .all(|word| label.contains(word))
 }
 
 /// What a key press in the palette leads to.
@@ -185,9 +114,8 @@ impl Palette {
 
     /// The commands matching the text typed, in order.
     pub fn matches(&self) -> Vec<Command> {
-        Command::ALL
-            .into_iter()
-            .filter(|command| command.matches(&self.query))
+        listed()
+            .filter(|&command| matches(command, &self.query))
             .collect()
     }
 
@@ -250,7 +178,7 @@ mod tests {
 
     #[test]
     fn lists_every_command_until_something_is_typed() {
-        assert_eq!(Palette::default().matches(), Command::ALL.to_vec());
+        assert_eq!(Palette::default().matches(), listed().collect::<Vec<_>>());
     }
 
     #[test]
@@ -329,16 +257,51 @@ mod tests {
     }
 
     #[test]
-    fn shortcuts_follow_the_platform() {
+    fn shows_the_shortcuts_in_effect() {
+        let shown =
+            |command, shortcuts, bindings: &Bindings| shortcut(command, shortcuts, bindings);
+        let windows = Bindings::new(Shortcuts::Windows, &[]);
+        let mac = Bindings::new(Shortcuts::MacOs, &[]);
         assert_eq!(
-            Command::NewTab.shortcut(Shortcuts::Windows),
+            shown(Command::NewTab, Shortcuts::Windows, &windows).as_deref(),
             Some("Ctrl+Shift+T")
         );
-        assert_eq!(Command::NewTab.shortcut(Shortcuts::MacOs), Some("Cmd+T"));
         assert_eq!(
-            Command::Paste.shortcut(Shortcuts::Unix),
+            shown(Command::NewTab, Shortcuts::MacOs, &mac).as_deref(),
+            Some("Cmd+T")
+        );
+        assert_eq!(
+            shown(Command::FocusLeft, Shortcuts::MacOs, &mac).as_deref(),
+            Some("Cmd+Option+Left")
+        );
+        assert_eq!(
+            shown(Command::Paste, Shortcuts::Unix, &windows).as_deref(),
             Some("Ctrl+Shift+V")
         );
-        assert_eq!(Command::ReloadConfig.shortcut(Shortcuts::Windows), None);
+        assert_eq!(
+            shown(Command::ReloadConfig, Shortcuts::Windows, &windows),
+            None
+        );
+        // A shortcut from the configuration.
+        let configured = Bindings::new(
+            Shortcuts::Windows,
+            &[(
+                Command::ReloadConfig,
+                Some(woop_config::KeyChord::parse("Ctrl+Shift+R").expect("valid")),
+            )],
+        );
+        assert_eq!(
+            shown(Command::ReloadConfig, Shortcuts::Windows, &configured).as_deref(),
+            Some("Ctrl+Shift+R")
+        );
+    }
+
+    #[test]
+    fn the_palette_does_not_list_itself() {
+        assert!(
+            !Palette::default()
+                .matches()
+                .contains(&Command::CommandPalette)
+        );
     }
 }

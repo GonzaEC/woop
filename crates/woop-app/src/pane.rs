@@ -10,6 +10,7 @@ use woop_term::{
     Screen, SelectionKind, SelectionPoint, Session, Terminal, TerminalEvent, TerminalSize, input,
 };
 
+use crate::bindings::Bindings;
 use crate::editor;
 use crate::gate::{self, Consumed, Gate};
 use crate::history::History;
@@ -116,11 +117,19 @@ pub struct Pane {
     panel_lines: usize,
     /// A message shown on the panel until the text changes.
     notice: Option<&'static str>,
+    /// The keyboard shortcuts in effect (ADR 0021).
+    bindings: Arc<Bindings>,
 }
 
 impl Pane {
     /// Wraps a session that was just started, at `size`.
-    pub fn new(id: PaneId, session: Session, size: TerminalSize, metrics: Metrics) -> Self {
+    pub fn new(
+        id: PaneId,
+        session: Session,
+        size: TerminalSize,
+        metrics: Metrics,
+        bindings: Arc<Bindings>,
+    ) -> Self {
         Self {
             id,
             screen: session.terminal().screen(),
@@ -134,6 +143,7 @@ impl Pane {
             gate: Gate::default(),
             panel_lines: 1,
             notice: None,
+            bindings,
         }
     }
 
@@ -144,8 +154,10 @@ impl Pane {
 
     /// Draws the pane again with a new font, after the configuration
     /// changed; the grid is measured again on its next layout. Colours are
-    /// read when drawing, so this also applies new colours.
-    pub fn restyle(&mut self, metrics: Metrics) {
+    /// read when drawing, so this also applies new colours, and the new
+    /// keyboard shortcuts.
+    pub fn restyle(&mut self, metrics: Metrics, bindings: Arc<Bindings>) {
+        self.bindings = bindings;
         self.metrics = metrics;
         self.cache.clear();
     }
@@ -278,7 +290,7 @@ impl Pane {
                 self.scroll(pages * i32::from(self.size.rows.saturating_sub(1).max(1)));
             }
             // Handled by the window before reaching a pane.
-            Message::Key(KeyAction::Workspace(_)) => {}
+            Message::Key(KeyAction::Workspace(_) | KeyAction::Command(_)) => {}
             Message::Scroll(lines) => self.scroll(lines),
             Message::Resized(size) => {
                 self.size = size;
@@ -326,6 +338,7 @@ impl Pane {
             has_selection: terminal.has_selection(),
             shortcuts: keys::Shortcuts::platform(),
             editor_active: self.editor_active(),
+            bindings: Arc::clone(&self.bindings),
         }
     }
 
@@ -336,7 +349,7 @@ impl Pane {
             screen: &self.screen,
             palette,
             metrics: self.metrics,
-            keys,
+            keys: keys.clone(),
             takes_keys: focused,
             cache: &self.cache,
         })
@@ -450,9 +463,10 @@ impl Pane {
             // grid, in order with the ones after it.
             let grid = keys::KeyContext {
                 editor_active: false,
-                ..keys
+                ..keys.clone()
             };
-            return match keys::key_press(&press.key, press.modifiers, press.text.as_deref(), grid) {
+            return match keys::key_press(&press.key, press.modifiers, press.text.as_deref(), &grid)
+            {
                 Some(action) => self.handle(Message::Key(action), history),
                 None => Task::none(),
             };

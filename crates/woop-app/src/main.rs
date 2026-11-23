@@ -1,6 +1,7 @@
 //! Woop application entry point: the window, its tabs and their panes
 //! (ADR 0019).
 
+mod bindings;
 mod editor;
 mod gate;
 mod history;
@@ -11,6 +12,7 @@ mod theme;
 mod view;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use iced::futures::channel::mpsc::{self, UnboundedSender};
 use iced::futures::{SinkExt, Stream, StreamExt};
@@ -19,6 +21,7 @@ use iced::widget::{button, column, container, keyed_column, mouse_area, row, sta
 use iced::{Background, Border, Element, Length, Subscription, Task, keyboard};
 use woop_term::{ShellCommand, TerminalSize, shell_integration};
 
+use bindings::Bindings;
 use history::History;
 use keys::{Direction, KeyAction, WorkspaceAction};
 use palette::{Command, Outcome, Palette as CommandPalette};
@@ -94,6 +97,8 @@ struct Woop {
     /// Commands submitted from any pane's editor.
     history: History,
     palette: Palette,
+    /// The keyboard shortcuts in effect (ADR 0021).
+    bindings: Arc<Bindings>,
     metrics: Metrics,
     /// A pane whose command is still running was asked to close; asking
     /// again closes it.
@@ -122,6 +127,7 @@ impl Woop {
             next_id: 0,
             history: History::default(),
             palette: Palette::default(),
+            bindings: Arc::new(Bindings::default()),
             metrics: Metrics::measure(view::default_font(), woop_config::DEFAULT_FONT_SIZE),
             pending_close: None,
             config: Config::default(),
@@ -157,6 +163,7 @@ impl Woop {
             return;
         }
         self.palette = Palette::from(&config.colors);
+        self.bindings = Arc::new(Bindings::new(keys::Shortcuts::platform(), &config.keys));
         let font = config
             .font
             .family
@@ -165,7 +172,7 @@ impl Woop {
             .map_or_else(view::default_font, iced::Font::with_name);
         self.metrics = Metrics::measure(font, config.font.size);
         for pane in self.panes.values_mut() {
-            pane.restyle(self.metrics);
+            pane.restyle(self.metrics, Arc::clone(&self.bindings));
         }
         self.config = config;
     }
@@ -217,6 +224,16 @@ impl Woop {
                     return self.workspace(action);
                 }
             }
+            // A palette command given a shortcut in the configuration: it
+            // acts on the focused pane that read the key.
+            Message::Pane(id, pane::Message::Key(KeyAction::Command(command))) => {
+                // Like any other key, it withdraws a pending close request.
+                self.pending_close = None;
+                if self.command_palette.is_none() && self.focused() == Some(id) {
+                    self.palette_target = Some(id);
+                    return self.run_command(command);
+                }
+            }
             Message::Pane(id, message) => {
                 if matches!(
                     message,
@@ -262,7 +279,7 @@ impl Woop {
             Message::ConfigChanged => self.reload_config(),
             Message::PaletteKey(key, modifiers, text) => {
                 // The palette's own shortcut closes it again.
-                let toggle = keys::key_press(&key, modifiers, None, self.idle_key_context())
+                let toggle = keys::key_press(&key, modifiers, None, &self.idle_key_context())
                     == Some(KeyAction::Workspace(WorkspaceAction::CommandPalette));
                 let Some(palette) = &mut self.command_palette else {
                     return Task::none();
@@ -382,6 +399,7 @@ impl Woop {
             has_selection: false,
             shortcuts: keys::Shortcuts::platform(),
             editor_active: false,
+            bindings: Arc::clone(&self.bindings),
         }
     }
 
@@ -398,6 +416,7 @@ impl Woop {
         // Kept while the command runs, for the pane commands.
         self.palette_target = target;
         let run = match command {
+            Command::CommandPalette => self.workspace(WorkspaceAction::CommandPalette),
             Command::NewTab => self.workspace(WorkspaceAction::NewTab),
             Command::ClosePane => self.workspace(WorkspaceAction::ClosePane),
             Command::NextTab => self.workspace(WorkspaceAction::NextTab),
@@ -492,12 +511,13 @@ impl Woop {
                     } else {
                         palette.background
                     };
-                    let shortcut = command.shortcut(shortcuts).unwrap_or("");
+                    let shortcut =
+                        palette::shortcut(command, shortcuts, &self.bindings).unwrap_or_default();
                     button(
                         row![
-                            line(command.label().to_owned(), palette.foreground)
+                            line(palette::label(command).to_owned(), palette.foreground)
                                 .width(Length::Fill),
-                            line(shortcut.to_owned(), muted),
+                            line(shortcut, muted),
                         ]
                         .spacing(16),
                     )
@@ -682,8 +702,10 @@ impl Woop {
         };
         match shell_integration::spawn(command, size, notify) {
             Ok(session) => {
-                self.panes
-                    .insert(id, Pane::new(id, session, size, self.metrics));
+                self.panes.insert(
+                    id,
+                    Pane::new(id, session, size, self.metrics, Arc::clone(&self.bindings)),
+                );
                 Some(id)
             }
             Err(error) => {
