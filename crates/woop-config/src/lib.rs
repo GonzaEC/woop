@@ -244,10 +244,12 @@ pub fn watch(path: PathBuf, interval: Duration, on_change: impl Fn() + Send + 's
         let metadata = std::fs::metadata(path).ok()?;
         Some((metadata.modified().ok()?, metadata.len()))
     };
+    // Taken now, not when the thread starts: a change made in between would
+    // otherwise become the starting point and never be reported.
+    let mut last = stamp(&path);
     let spawned = std::thread::Builder::new()
         .name("woop-config-watch".into())
         .spawn(move || {
-            let mut last = stamp(&path);
             loop {
                 std::thread::sleep(interval);
                 let now = stamp(&path);
@@ -518,6 +520,9 @@ mod tests {
         watch(path.clone(), Duration::from_millis(20), move || {
             let _ = sender.send(());
         });
+        // Written right after `watch` returns, before its thread may have
+        // started: the change must still be seen (this failed in CI when the
+        // starting point was taken by the thread).
         std::fs::write(&path, "[font]\nsize = 12\n").expect("write");
         assert!(
             changes.recv_timeout(Duration::from_secs(10)).is_ok(),

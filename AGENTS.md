@@ -66,6 +66,7 @@ Automated tests cannot judge how the window looks or feels (rendering, keyboard,
 - Platform-specific code goes behind `cfg` attributes and must keep all three platforms compiling.
 - Keep allocations and blocking calls off the render path.
 - Add tests with every behaviour change: unit tests next to the code, end-to-end tests in `tests/`. Prefer real processes over mocks for PTY behaviour.
+- A background thread that reports changes takes its starting state before the call that starts it returns, never inside the thread: a change made before the thread runs would otherwise be missed (this passed locally and failed on every CI runner).
 - Tests with real shells must not depend on timing. A shell may echo input before it prints its prompt, so match on content (for example, a line *ending* in the expected output) rather than on exact lines or order.
 - Tests run on all three platforms. Do not parse another platform's paths with `std::path`: on Unix, `Path` does not treat `\` as a separator.
 
