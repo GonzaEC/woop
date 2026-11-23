@@ -93,7 +93,7 @@ struct Woop {
     /// Which prompt the editor takes the keys for.
     gate: Gate,
     /// Lines of text the editor's panel has room for. It grows while
-    /// editing and shrinks back only at a new prompt.
+    /// editing and shrinks back at a new prompt or once the editor is empty.
     panel_lines: usize,
     /// A message shown on the panel until the text changes.
     notice: Option<&'static str>,
@@ -233,7 +233,13 @@ impl Woop {
                     self.paste_into_shell(&text);
                 }
             }
-            Message::Pasted(None) => {}
+            // The clipboard holds no text (an image, for example): say so,
+            // rather than doing nothing.
+            Message::Pasted(None) => {
+                if self.editor_active() {
+                    self.notice = Some("The clipboard has no text to paste");
+                }
+            }
             Message::EditorAction(action) => {
                 if self.editor_active() {
                     self.edit(action);
@@ -340,8 +346,13 @@ impl Woop {
 
     /// The panel grows with the text; it shrinks only at a new prompt, so
     /// the grid is not resized while editing or when a command starts.
+    /// Once the editor is empty again, the panel goes back to one line.
     fn grow_panel(&mut self) {
-        self.panel_lines = self.panel_lines.max(editor::lines_for(&self.editor));
+        self.panel_lines = if self.editor.is_empty() {
+            1
+        } else {
+            self.panel_lines.max(editor::lines_for(&self.editor))
+        };
     }
 
     /// Pastes text into the shell, as on the grid.
@@ -544,9 +555,16 @@ impl Woop {
         let notify = move || {
             let _ = sender.unbounded_send(());
         };
-        let command = shell_integration::apply(ShellCommand::default_shell());
+        // Marks count only if they carry this session's token, so output
+        // cannot forge blocks or turn the command editor on and off. The
+        // token is required before any output is pumped (ADR 0018).
+        let token = shell_integration::MarkToken::generate();
+        let command = shell_integration::apply(ShellCommand::default_shell(), &token);
         match Session::spawn_with_notifier(&command, self.size, notify) {
-            Ok(session) => self.session = Some(session),
+            Ok(mut session) => {
+                session.terminal_mut().require_mark_token(&token);
+                self.session = Some(session);
+            }
             Err(error) => {
                 eprintln!("woop: failed to start the shell: {error}");
                 std::process::exit(1);

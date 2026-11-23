@@ -4,6 +4,14 @@
 # the prompt, the command and its result with OSC 133 sequences so that Woop
 # can group output into command blocks.
 
+# Woop passes a per-session token that every mark carries, so that output
+# cannot forge marks. Keep it in a shell variable and remove it from the
+# environment before anything else runs, so programs do not inherit it.
+# Only hexadecimal digits are kept: the token is written into PS1, where
+# anything else could be expanded.
+__woop_token=${WOOP_TOKEN//[^0-9a-f]/}
+unset WOOP_TOKEN
+
 if [ -f "$HOME/.bashrc" ]; then
     . "$HOME/.bashrc"
 fi
@@ -20,14 +28,16 @@ if [ -z "$__woop_integrated" ]; then
 
     __woop_prompt() {
         if [ -n "$__woop_prompted" ]; then
-            printf '\033]133;D;%s\007' "$__woop_status"
+            printf '\033]133;D;%s;woop=%s\007' "$__woop_status" "$__woop_token"
         fi
         __woop_prompted=1
         __woop_at_prompt=1
-        # Wrap the prompt again if the user's PROMPT_COMMAND rebuilt it.
+        # Wrap the prompt again if the user's PROMPT_COMMAND rebuilt it. A
+        # prompt with its own, unsigned marks is wrapped too: Woop ignores
+        # those.
         case "$PS1" in
-            *'133;A'*) ;;
-            *) PS1='\[\033]133;A\007\]'"$PS1"'\[\033]133;B\007\]' ;;
+            *"woop=$__woop_token"*) ;;
+            *) PS1='\[\033]133;A;woop='"$__woop_token"'\007\]'"$PS1"'\[\033]133;B;woop='"$__woop_token"'\007\]' ;;
         esac
         return "$__woop_status"
     }
@@ -36,7 +46,7 @@ if [ -z "$__woop_integrated" ]; then
 
     if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; }; then
         # PS0 is printed after a command is read and before it runs.
-        PS0='\033]133;C\007'"$PS0"
+        PS0='\033]133;C;woop='"$__woop_token"'\007'"$PS0"
     elif [ -z "$(trap -p DEBUG)" ]; then
         # Older versions have no PS0; use the DEBUG trap, which runs before
         # every command, and only mark the first one after a prompt. A DEBUG
@@ -45,7 +55,7 @@ if [ -z "$__woop_integrated" ]; then
         __woop_preexec() {
             if [ -n "$__woop_at_prompt" ]; then
                 __woop_at_prompt=
-                printf '\033]133;C\007'
+                printf '\033]133;C;woop=%s\007' "$__woop_token"
             fi
         }
         trap '__woop_preexec' DEBUG

@@ -10,9 +10,9 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
 - [x] **Security hardening.** Programs cannot use the clipboard (OSC 52); bounded queue and bounded work per pump between the output reader and the window; shell integration files private to their owner; block tracking that stays cheap under a flood of marks ([ADR 0013](adr/0013-bound-the-cost-of-program-output.md)).
 - [x] **Robustness tests.** Property-based tests showing that the emulator, the mark scanner and the input encoders never panic or hang on arbitrary input ([ADR 0014](adr/0014-property-based-robustness-tests.md)).
 - [x] **Replies off the interface thread.** Input, paste and replies to terminal queries are written by a dedicated thread with a bounded backlog, and replies are limited per pump, so a process that does not read its input cannot stall the window ([ADR 0015](adr/0015-write-input-on-a-dedicated-thread.md)).
+- [x] **Signed shell integration marks.** Marks count only if they carry a per-session token that Woop passes to its integration scripts, so displayed files, remote hosts and background jobs cannot forge blocks or exit codes, or turn the command editor on or off ([ADR 0018](adr/0018-per-session-mark-token.md)).
 - [ ] **Benchmarks.** Measured throughput of parsing and snapshotting, startup time and memory use in release builds, tracked over time.
 - [ ] **Hardening from the milestone 3 audit** (low findings):
-  - Only trust OSC 133 marks carrying a per-session token known to the integration scripts, so displayed files and remote hosts cannot forge blocks or exit codes.
   - Integration files: reject a relative `XDG_CACHE_HOME`, check that the directory and its parents belong to the user and are not writable by others, and open files without following symbolic links.
   - Ask before pasting several lines when the application has not enabled bracketed paste.
   - Selecting text on a fold summary selects the hidden first line; make summaries unselectable or select the whole fold.
@@ -21,13 +21,16 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
   - End-to-end tests for fish and for PowerShell 7 with a profile that defines its own prompt.
   - Cache fold positions between snapshots, and walk only the view in `visible()`.
 - [ ] **Hardening from the command editor review** (low findings):
-  - Forged prompt marks can turn the editor on while another program reads its input (a password prompt): the text is shown in the panel and kept in the history. Fixed by the per-session mark token above; until then, consider not recording history for a prompt that appeared while a command was running.
   - Without bracketed paste, tabs pasted into the editor trigger the shell's completion when the text is sent; replace them with spaces in that case.
-  - Output that forges an output-start or prompt mark, or switches to the alternate screen, turns the editor off while the user types; the keys after it go to the shell on their own. Also fixed by the per-session mark token above.
+  - Output that switches to the alternate screen while the user types turns the editor off; the keys after it go to the shell on their own. Keep the editor's keys until the user acts when it turns off with text in it.
   - The panel counts logical lines, so a long wrapped line scrolls inside one row, and Up on the second row of a wrapped first line walks the history. Use the widget's visual lines.
   - While the editor is active and focused, its caret blinks by redrawing twice per second at an idle prompt; measure the cost, or draw a caret that does not need it.
   - Alt with a letter types the letter in the editor; consider ignoring it, as the shell's Alt shortcuts do not apply there.
   - `Terminal::screen` takes about 90 µs at 50x200 but 700 µs at 100x300 (three times the cells, eight times the time); find out why.
+- [ ] **Hardening from the mark token review** (low findings):
+  - Requiring the token is a separate call after `Session::spawn`; with tabs, make sessions started with the integration require it themselves, so no caller can forget it.
+  - bash and zsh keep the token in `PS1`; a configuration that exports `PS1` passes it to programs. Print the marks from the prompt hooks instead.
+  - Consider taking the token's bits from the operating system directly instead of relying on `RandomState`.
 
 ## Milestones
 

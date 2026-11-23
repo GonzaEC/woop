@@ -16,6 +16,7 @@ use crate::blocks::{self, Block, BlockList, BlockRows, ViewLine};
 use crate::marks::{Mark, MarkScanner};
 use crate::screen::Screen;
 use crate::selection::{SelectionKind, SelectionPoint};
+use crate::shell_integration::MarkToken;
 
 /// Size of the terminal screen, in character cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -366,6 +367,13 @@ impl Terminal {
             self.blocks.remove_top_lines(removed);
         }
         self.history = self.term.grid().history_size();
+    }
+
+    /// From now on, accepts only shell integration marks that carry `token`
+    /// (ADR 0018), so that output cannot forge blocks or turn the command
+    /// editor on and off. Call it before any output is processed.
+    pub fn require_mark_token(&mut self, token: &MarkToken) {
+        self.marks.require_token(token.as_str().as_bytes());
     }
 
     /// Changes the screen size, reflowing content as needed.

@@ -2,7 +2,8 @@
 
 use std::time::Duration;
 
-use woop_term::{BlockState, Session, ShellCommand, TerminalSize, input, shell_integration};
+use woop_term::shell_integration::{self, MarkToken};
+use woop_term::{BlockState, Session, ShellCommand, TerminalSize, input};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -49,12 +50,17 @@ fn finished(session: &Session) -> usize {
         .count()
 }
 
+/// Starts `command` with the integration loaded, accepting only marks that
+/// carry the session's token, as Woop does: blocks then prove that the
+/// script signs every mark.
 fn start(command: ShellCommand) -> Session {
+    let token = MarkToken::generate();
     let mut session = Session::spawn(
-        &shell_integration::apply(command),
+        &shell_integration::apply(command, &token),
         TerminalSize::new(24, 100),
     )
     .expect("spawn");
+    session.terminal_mut().require_mark_token(&token);
     let ready = session
         .wait_until(TIMEOUT, |term| {
             term.blocks()
@@ -70,7 +76,9 @@ fn start(command: ShellCommand) -> Session {
     session
 }
 
-fn check_shell(command: ShellCommand, failing: &str, failing_code: i32) {
+/// `print_token` prints the `WOOP_TOKEN` environment variable between
+/// brackets, as a program started from the shell would see it.
+fn check_shell(command: ShellCommand, failing: &str, failing_code: i32, print_token: &str) {
     let mut session = start(command);
 
     assert_eq!(
@@ -80,6 +88,14 @@ fn check_shell(command: ShellCommand, failing: &str, failing_code: i32) {
     assert_eq!(
         run_block(&mut session, failing),
         (failing.to_owned(), Some(failing_code))
+    );
+    // The script removed the token from the environment, so programs do
+    // not inherit it.
+    run_block(&mut session, print_token);
+    let screen = session.terminal().screen_text();
+    assert!(
+        screen.lines().any(|line| line.trim_end() == "[]"),
+        "the token reached the environment; screen was:\n{screen}"
     );
     submit_from_editor(&mut session);
 }
@@ -153,6 +169,7 @@ fn powershell_marks_blocks() {
             .arg("-NoProfile"),
         "cmd /c exit 3",
         3,
+        "echo \"[$env:WOOP_TOKEN]\"",
     );
 }
 
@@ -163,6 +180,7 @@ fn bash_marks_blocks() {
         ShellCommand::new("bash").env("HOME", empty_home("bash")),
         "sh -c 'exit 3'",
         3,
+        "echo \"[$WOOP_TOKEN]\"",
     );
 }
 
@@ -184,6 +202,39 @@ fn bash_keeps_the_exit_status_for_the_users_prompt_command() {
     assert!(screen.contains("woop-status=3"), "screen was:\n{screen}");
 }
 
+/// A prompt that already carries its own, unsigned marks (as some prompt
+/// themes do) must still be wrapped with signed ones: Woop ignores the
+/// unsigned marks, so blocks would otherwise never form.
+#[cfg(unix)]
+#[test]
+fn bash_signs_a_prompt_that_has_its_own_marks() {
+    let home = empty_home("bash-own-marks");
+    std::fs::write(home.join(".bashrc"), "PS1='\\[\\e]133;A\\a\\]$ '\n").expect("write .bashrc");
+    let mut session = start(ShellCommand::new("bash").env("HOME", &home));
+
+    assert_eq!(
+        run_block(&mut session, "echo woop"),
+        ("echo woop".to_owned(), Some(0))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn zsh_signs_a_prompt_that_has_its_own_marks() {
+    if !in_path("zsh") {
+        eprintln!("zsh is not installed; skipping");
+        return;
+    }
+    let home = empty_home("zsh-own-marks");
+    std::fs::write(home.join(".zshrc"), "PS1=$'%{\\e]133;A\\a%}$ '\n").expect("write .zshrc");
+    let mut session = start(ShellCommand::new("zsh").env("HOME", &home));
+
+    assert_eq!(
+        run_block(&mut session, "echo woop"),
+        ("echo woop".to_owned(), Some(0))
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn zsh_marks_blocks() {
@@ -195,6 +246,7 @@ fn zsh_marks_blocks() {
         ShellCommand::new("zsh").env("HOME", empty_home("zsh")),
         "sh -c 'exit 3'",
         3,
+        "echo \"[$WOOP_TOKEN]\"",
     );
 }
 

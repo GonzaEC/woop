@@ -59,23 +59,73 @@ impl Shell {
     }
 }
 
-/// Returns `command` changed so that the shell loads Woop's integration.
+/// Environment variable that passes the mark token to the integration
+/// scripts, which remove it from the environment straight away.
+const TOKEN_VARIABLE: &str = "WOOP_TOKEN";
+
+/// A secret shared with the integration scripts of one session, which add
+/// it to every mark so that output cannot forge them (ADR 0018).
+#[derive(Clone, PartialEq, Eq)]
+pub struct MarkToken(String);
+
+impl MarkToken {
+    /// Generates a new random token: 128 bits as 32 hexadecimal digits.
+    ///
+    /// The bits come from the standard library's SipHash keyed with random
+    /// keys from the operating system. Nobody sees any output of that hash
+    /// before the token is used, so it cannot be predicted.
+    pub fn generate() -> Self {
+        use std::collections::hash_map::RandomState;
+        use std::hash::{BuildHasher, Hasher};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |time| time.as_nanos());
+        let half = |part: u8| {
+            let mut hasher = RandomState::new().build_hasher();
+            hasher.write_u8(part);
+            hasher.write_u128(nanos);
+            hasher.write_u32(std::process::id());
+            hasher.finish()
+        };
+        Self(format!("{:016x}{:016x}", half(0), half(1)))
+    }
+
+    /// The token as text, as the scripts write it.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for MarkToken {
+    /// Never prints the secret, so it cannot end up in logs.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MarkToken(..)")
+    }
+}
+
+/// Returns `command` changed so that the shell loads Woop's integration,
+/// which signs its marks with `token`.
 ///
 /// Commands for unknown shells, or for which the integration files cannot
 /// be written, are returned unchanged: the shell then works as in any
 /// terminal, without command blocks.
-pub fn apply(command: ShellCommand) -> ShellCommand {
+pub fn apply(command: ShellCommand, token: &MarkToken) -> ShellCommand {
     let Some(shell) = Shell::detect(&command.program) else {
         return command;
     };
+    let with_token = |command: ShellCommand| command.env(TOKEN_VARIABLE, token.as_str());
     match shell {
-        Shell::PowerShell => command
+        Shell::PowerShell => with_token(command)
             .arg("-NoExit")
             .arg("-EncodedCommand")
             .arg(encode_powershell(POWERSHELL)),
-        Shell::Fish => command.arg("--init-command").arg(FISH),
+        Shell::Fish => with_token(command).arg("--init-command").arg(FISH),
         Shell::Bash => match write_files(&[("woop.bash", BASH)]) {
-            Some(dir) => command.arg("--rcfile").arg(dir.join("woop.bash")),
+            Some(dir) => with_token(command)
+                .arg("--rcfile")
+                .arg(dir.join("woop.bash")),
             None => command,
         },
         Shell::Zsh => match write_files(&ZSH_FILES) {
@@ -83,7 +133,7 @@ pub fn apply(command: ShellCommand) -> ShellCommand {
                 let user_dir = std::env::var_os("ZDOTDIR")
                     .or_else(|| std::env::var_os("HOME"))
                     .unwrap_or_default();
-                command
+                with_token(command)
                     .env("WOOP_USER_ZDOTDIR", user_dir)
                     .env("ZDOTDIR", dir)
             }
@@ -213,24 +263,57 @@ mod tests {
         assert_eq!(detect("cmd.exe"), None);
     }
 
-    #[test]
-    fn unknown_shells_are_unchanged() {
-        let command = ShellCommand::new("cmd.exe").arg("/Q");
-        assert_eq!(apply(command.clone()), command);
+    fn token_variable(command: &ShellCommand) -> Option<String> {
+        command
+            .env
+            .iter()
+            .find(|(key, _)| key == TOKEN_VARIABLE)
+            .map(|(_, value)| value.to_string_lossy().into_owned())
     }
 
     #[test]
-    fn powershell_receives_the_script_inline() {
-        let command = apply(ShellCommand::new("pwsh.exe").arg("-NoLogo"));
+    fn unknown_shells_are_unchanged() {
+        let command = ShellCommand::new("cmd.exe").arg("/Q");
+        assert_eq!(apply(command.clone(), &MarkToken::generate()), command);
+    }
+
+    #[test]
+    fn powershell_receives_the_script_inline_and_the_token_privately() {
+        let token = MarkToken::generate();
+        let command = apply(ShellCommand::new("pwsh.exe").arg("-NoLogo"), &token);
         let args: Vec<_> = command.args.iter().map(|a| a.to_string_lossy()).collect();
         assert_eq!(args[..3], ["-NoLogo", "-NoExit", "-EncodedCommand"]);
         assert_eq!(args[3], encode_powershell(POWERSHELL));
+        // In the environment, never on the command line.
+        assert_eq!(token_variable(&command).as_deref(), Some(token.as_str()));
+        assert!(!args.iter().any(|arg| arg.contains(token.as_str())));
     }
 
     #[test]
     fn fish_receives_the_script_inline() {
-        let command = apply(ShellCommand::new("fish"));
+        let token = MarkToken::generate();
+        let command = apply(ShellCommand::new("fish"), &token);
         assert_eq!(command.args, ["--init-command", FISH]);
+        assert_eq!(token_variable(&command).as_deref(), Some(token.as_str()));
+    }
+
+    #[test]
+    fn tokens_are_long_random_and_never_printed() {
+        let first = MarkToken::generate();
+        let second = MarkToken::generate();
+        assert_eq!(first.as_str().len(), 32);
+        assert!(first.as_str().bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first, second);
+        assert_eq!(format!("{first:?}"), "MarkToken(..)");
+    }
+
+    #[test]
+    fn the_scripts_read_the_token_from_the_environment() {
+        // The token reaches the shell only through its environment; the
+        // scripts are shared by every session and written to disk.
+        for script in [POWERSHELL, BASH, FISH, ZSH_FILES[0].1] {
+            assert!(script.contains(TOKEN_VARIABLE));
+        }
     }
 
     #[test]

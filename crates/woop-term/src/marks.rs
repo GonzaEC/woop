@@ -60,7 +60,6 @@ enum State {
 }
 
 /// Incremental scanner for OSC 133 marks.
-#[derive(Debug)]
 pub(crate) struct MarkScanner {
     state: State,
     payload: Vec<u8>,
@@ -73,6 +72,20 @@ pub(crate) struct MarkScanner {
     /// The CSI has a private marker or an intermediate byte, so it is not a
     /// plain erase command.
     csi_other: bool,
+    /// When set, OSC 133 marks count only if they carry this token as a
+    /// `woop=<token>` option (ADR 0018).
+    token: Option<Vec<u8>>,
+}
+
+/// Shows only the scanner's state: the token, and the payload of a mark
+/// being read, are secrets that must not end up in logs.
+impl std::fmt::Debug for MarkScanner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MarkScanner")
+            .field("state", &self.state)
+            .field("requires_token", &self.token.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for MarkScanner {
@@ -84,6 +97,7 @@ impl Default for MarkScanner {
             csi_first: 0,
             csi_after_first: false,
             csi_other: false,
+            token: None,
         }
     }
 }
@@ -96,6 +110,16 @@ fn stays_in_escape(byte: u8) -> bool {
 }
 
 impl MarkScanner {
+    /// From now on, accepts only marks that carry `token`.
+    pub(crate) fn require_token(&mut self, token: &[u8]) {
+        self.token = Some(token.to_vec());
+    }
+
+    /// Parses a complete OSC payload into a mark, checking the token.
+    fn mark(&self, payload: &[u8]) -> Option<Mark> {
+        parse(payload, self.token.as_deref())
+    }
+
     /// Scans `bytes` and returns each mark found, with the index just after
     /// its terminator. Feeding the emulator up to that index and then
     /// handling the mark keeps marks in step with the text around them.
@@ -162,7 +186,7 @@ impl MarkScanner {
                 // sequence.
                 (State::Csi, _) => State::Csi,
                 (State::Osc, BEL) => {
-                    if let Some(mark) = parse(&self.payload) {
+                    if let Some(mark) = self.mark(&self.payload) {
                         marks.push((index + 1, mark));
                     }
                     State::Ground
@@ -178,7 +202,7 @@ impl MarkScanner {
                     State::Osc
                 }
                 (State::OscEscape, b'\\') => {
-                    if let Some(mark) = parse(&self.payload) {
+                    if let Some(mark) = self.mark(&self.payload) {
                         marks.push((index + 1, mark));
                     }
                     State::Ground
@@ -202,9 +226,19 @@ impl MarkScanner {
     }
 }
 
-/// Parses an OSC payload such as `133;D;0`.
-fn parse(payload: &[u8]) -> Option<Mark> {
+/// Parses an OSC payload such as `133;D;0;woop=<token>`. With a `token`,
+/// the payload must carry it in a `woop=` option.
+fn parse(payload: &[u8], token: Option<&[u8]>) -> Option<Mark> {
     let rest = payload.strip_prefix(b"133;")?;
+    if let Some(token) = token {
+        let carried = rest
+            .split(|&byte| byte == b';')
+            .skip(1)
+            .any(|field| field.strip_prefix(b"woop=") == Some(token));
+        if !carried {
+            return None;
+        }
+    }
     let mut fields = rest.split(|&byte| byte == b';');
     let mark = match fields.next()? {
         b"A" => Mark::PromptStart,
@@ -245,22 +279,71 @@ mod tests {
 
     #[test]
     fn reads_exit_codes() {
-        assert_eq!(parse(b"133;D;0"), Some(Mark::CommandFinished(Some(0))));
-        assert_eq!(parse(b"133;D;-1"), Some(Mark::CommandFinished(Some(-1))));
-        assert_eq!(parse(b"133;D"), Some(Mark::CommandFinished(None)));
-        assert_eq!(parse(b"133;D;x"), Some(Mark::CommandFinished(None)));
+        assert_eq!(
+            parse(b"133;D;0", None),
+            Some(Mark::CommandFinished(Some(0)))
+        );
+        assert_eq!(
+            parse(b"133;D;-1", None),
+            Some(Mark::CommandFinished(Some(-1)))
+        );
+        assert_eq!(parse(b"133;D", None), Some(Mark::CommandFinished(None)));
+        assert_eq!(parse(b"133;D;x", None), Some(Mark::CommandFinished(None)));
     }
 
     #[test]
     fn accepts_extra_options() {
-        assert_eq!(parse(b"133;A;cl=m;aid=1"), Some(Mark::PromptStart));
+        assert_eq!(parse(b"133;A;cl=m;aid=1", None), Some(Mark::PromptStart));
+    }
+
+    #[test]
+    fn with_a_token_only_marks_carrying_it_count() {
+        let token = Some(&b"abc123"[..]);
+        assert_eq!(parse(b"133;A;woop=abc123", token), Some(Mark::PromptStart));
+        assert_eq!(
+            parse(b"133;D;2;woop=abc123", token),
+            Some(Mark::CommandFinished(Some(2)))
+        );
+        assert_eq!(
+            parse(b"133;B;aid=1;woop=abc123", token),
+            Some(Mark::CommandStart)
+        );
+        // Forged marks: no token, a wrong one, a prefix or an extension of
+        // it, or the token in place of the mark letter.
+        for forged in [
+            &b"133;A"[..],
+            b"133;A;woop=",
+            b"133;A;woop=abc12",
+            b"133;A;woop=abc1234",
+            b"133;A;woop=ABC123",
+            b"133;A;xwoop=abc123",
+            b"133;woop=abc123",
+            b"133;D;woop=abc12;0",
+        ] {
+            assert_eq!(parse(forged, token), None, "{forged:?}");
+        }
+    }
+
+    #[test]
+    fn the_scanner_requires_the_token_once_set() {
+        let mut scanner = MarkScanner::default();
+        scanner.require_token(b"t0k");
+        let bytes = b"\x1b]133;A\x07\x1b]133;A;woop=t0k\x07\x1b[3J";
+        assert_eq!(
+            scanner.scan(bytes),
+            [
+                (bytes.len() - 4, Mark::PromptStart),
+                // History clears are not marks and need no token.
+                (bytes.len(), Mark::HistoryCleared)
+            ]
+        );
     }
 
     #[test]
     fn ignores_other_sequences() {
-        assert_eq!(parse(b"0;title"), None);
-        assert_eq!(parse(b"1337;A"), None);
-        assert_eq!(parse(b"133;Z"), None);
+        assert_eq!(parse(b"0;title", None), None);
+        assert_eq!(parse(b"1337;A", None), None);
+        assert_eq!(parse(b"133;Z", None), None);
         assert_eq!(scan(&[b"\x1b[31mred\x1b]0;title\x07"]), [vec![]]);
     }
 

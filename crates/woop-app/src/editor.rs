@@ -6,7 +6,7 @@ use iced::{Background, Border, Element, Length, Padding, Task};
 
 use crate::Message;
 use crate::gate::Status as GateStatus;
-use crate::keys::{self, EditorContext, EditorKey, KeyContext};
+use crate::keys::{self, EditorContext, EditorKey, KeyAction, KeyContext};
 use crate::theme::{self, Palette};
 use crate::view::Metrics;
 
@@ -165,9 +165,11 @@ pub fn panel(panel: Panel<'_>) -> Element<'_, Message> {
             ..container::Style::default()
         });
     // Any click on the panel, also outside the text, keeps the keyboard on
-    // the editor.
+    // the editor. A right click pastes, as on the grid: into the editor
+    // while it is active, into the shell otherwise.
     mouse_area(column![line, row![marker, layers]].width(Length::Fill))
         .on_press(Message::FocusEditor)
+        .on_right_press(Message::Key(KeyAction::Paste))
         .into()
 }
 

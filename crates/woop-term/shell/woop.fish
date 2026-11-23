@@ -7,12 +7,18 @@
 if not set -q __woop_integrated
     set -g __woop_integrated 1
 
+    # Woop passes a per-session token that every mark carries, so that
+    # output cannot forge marks. Keep it in a global (not exported) variable
+    # and remove it from the environment, so programs do not inherit it.
+    set -g __woop_token (string replace -ra '[^0-9a-f]' '' -- "$WOOP_TOKEN")
+    set -e WOOP_TOKEN
+
     function __woop_preexec --on-event fish_preexec
-        printf '\e]133;C\a'
+        printf '\e]133;C;woop=%s\a' "$__woop_token"
     end
 
     function __woop_postexec --on-event fish_postexec
-        printf '\e]133;D;%s\a' $status
+        printf '\e]133;D;%s;woop=%s\a' $status "$__woop_token"
     end
 
     function __woop_return
@@ -24,12 +30,12 @@ if not set -q __woop_integrated
 
     function fish_prompt
         set -l last_status $status
-        printf '\e]133;A\a'
+        printf '\e]133;A;woop=%s\a' "$__woop_token"
         if functions -q __woop_original_prompt
             # Restore the status so the original prompt can show it.
             __woop_return $last_status
             __woop_original_prompt
         end
-        printf '\e]133;B\a'
+        printf '\e]133;B;woop=%s\a' "$__woop_token"
     end
 end

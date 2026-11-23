@@ -20,18 +20,20 @@ if [[ -z $__woop_integrated ]]; then
 
     __woop_precmd() {
         if [[ -n $__woop_ran ]]; then
-            print -n "\e]133;D;$__woop_status\a"
+            print -n "\e]133;D;$__woop_status;woop=$__woop_token\a"
         fi
         __woop_ran=
         # Wrap the prompt again if a theme rebuilt it.
-        if [[ $PS1 != *'133;A'* ]]; then
-            PS1=$'%{\e]133;A\a%}'"$PS1"$'%{\e]133;B\a%}'
+        # A prompt with its own, unsigned marks is wrapped too: Woop ignores
+        # those.
+        if [[ $PS1 != *"woop=$__woop_token"* ]]; then
+            PS1=$'%{\e]133;A;woop='"$__woop_token"$'\a%}'"$PS1"$'%{\e]133;B;woop='"$__woop_token"$'\a%}'
         fi
     }
 
     __woop_preexec() {
         __woop_ran=1
-        print -n "\e]133;C\a"
+        print -n "\e]133;C;woop=$__woop_token\a"
     }
 
     # The status must be read before other hooks run, and the prompt
