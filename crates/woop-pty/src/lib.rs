@@ -206,19 +206,9 @@ fn resolve_program_in(
         return Err("must be an absolute path or a program name found in PATH".into());
     }
     let candidates = |dir: PathBuf| -> Vec<PathBuf> {
-        let mut names = vec![dir.join(program)];
-        #[cfg(windows)]
-        if path.extension().is_none() {
-            let extensions =
-                std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
-            names.extend(
-                extensions
-                    .split(';')
-                    .filter(|extension| !extension.is_empty())
-                    .map(|extension| dir.join(format!("{text}{extension}"))),
-            );
-        }
-        names
+        std::iter::once(dir.join(program))
+            .chain(with_extensions(&dir, &text, path))
+            .collect()
     };
     search_path
         .iter()
@@ -228,6 +218,27 @@ fn resolve_program_in(
         .flat_map(candidates)
         .find(|candidate| is_program(candidate))
         .ok_or_else(|| format!("`{text}` was not found in PATH"))
+}
+
+/// On Windows, a name without an extension can be run with any extension
+/// of `PATHEXT` (`pwsh` for `pwsh.exe`).
+#[cfg(windows)]
+fn with_extensions(dir: &std::path::Path, name: &str, path: &std::path::Path) -> Vec<PathBuf> {
+    if path.extension().is_some() {
+        return Vec::new();
+    }
+    let extensions = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+    extensions
+        .split(';')
+        .filter(|extension| !extension.is_empty())
+        .map(|extension| dir.join(format!("{name}{extension}")))
+        .collect()
+}
+
+/// Elsewhere programs are run by their exact name.
+#[cfg(not(windows))]
+fn with_extensions(_dir: &std::path::Path, _name: &str, _path: &std::path::Path) -> Vec<PathBuf> {
+    Vec::new()
 }
 
 /// Whether `path` is a file that can be run.
