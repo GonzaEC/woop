@@ -33,6 +33,10 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
 - [ ] **Hardening from the tabs and splits review** (low findings):
   - `Session::spawn` still accepts unsigned marks; make the scanner reject marks until a token is set, with an explicit choice for sessions without integration.
   - Alt+Left and Alt+Right move the focus between panes and so are taken from programs that use them; make them configurable.
+- [ ] **Hardening from the configuration review** (low findings):
+  - Unix: also require the configuration file and every directory above it to belong to the user (or root), refuse writable ancestors without the sticky bit, and treat a failure to check a directory as a refusal.
+  - Windows: check the owner or access rights of the configuration file instead of assuming `%APPDATA%` is private (it can live on a network share).
+  - Stop the configuration watcher thread when nothing listens any more.
 
 ## Milestones
 
@@ -54,7 +58,8 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
 - [ ] **5. Workspace.**
   - [x] Tabs and split panes: each pane runs its own shell with its own command editor; new tab, close pane (asking again when a command is running), next and previous tab, split right or down, move the focus, drag the splits ([ADR 0019](adr/0019-tabs-and-split-panes.md)).
   - [ ] Command palette.
-  - [ ] TOML configuration with live reload, themes.
+  - [x] TOML configuration with live reload: font, shell, colours and two built-in themes ([ADR 0020](adr/0020-toml-configuration.md), [configuration](configuration.md)).
+  - [ ] Configurable keybindings.
   - [ ] New panes start in the focused pane's directory (the shell reports it with OSC 7).
 - [ ] **6. Completions and assistant.** History and path completions, command specifications, optional AI providers (own API key or local model).
 - [ ] **7. Interface design.** One design pass over the whole interface once its features are in place: how the command editor relates to the prompt and the blocks (today it sits far from the prompt on a mostly empty screen, its marker is small and faint, and the panel does not read as part of the current block), blocks, tabs, panels and the default theme.

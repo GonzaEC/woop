@@ -1,6 +1,7 @@
 //! Colours used to draw the terminal.
 
 use iced::Color;
+use woop_config::{Colors, Rgb};
 use woop_term::Color as CellColor;
 
 /// A terminal colour scheme.
@@ -26,32 +27,23 @@ pub struct Palette {
 
 impl Default for Palette {
     fn default() -> Self {
+        Self::from(&Colors::dark())
+    }
+}
+
+impl From<&Colors> for Palette {
+    /// The palette for colours from the configuration (ADR 0020).
+    fn from(colors: &Colors) -> Self {
+        let color = |Rgb(r, g, b): Rgb| Color::from_rgb8(r, g, b);
         Self {
-            foreground: rgb(0xd4d7dd),
-            background: rgb(0x16181d),
-            cursor: rgb(0x7aa2f7),
-            selection: rgb(0x2f3d58),
-            separator: rgb(0x2c313a),
-            success: rgb(0x98c379),
-            failure: rgb(0xe06c75),
-            ansi: [
-                rgb(0x1f2229),
-                rgb(0xe06c75),
-                rgb(0x98c379),
-                rgb(0xe5c07b),
-                rgb(0x61afef),
-                rgb(0xc678dd),
-                rgb(0x56b6c2),
-                rgb(0xc8ccd4),
-                rgb(0x5c6370),
-                rgb(0xff7a85),
-                rgb(0xb5e890),
-                rgb(0xffd68a),
-                rgb(0x82c4ff),
-                rgb(0xde9bf2),
-                rgb(0x7fd3de),
-                rgb(0xf5f6f8),
-            ],
+            foreground: color(colors.foreground),
+            background: color(colors.background),
+            cursor: color(colors.cursor),
+            selection: color(colors.selection),
+            separator: color(colors.separator),
+            success: color(colors.success),
+            failure: color(colors.failure),
+            ansi: colors.ansi.map(color),
         }
     }
 }
@@ -97,11 +89,6 @@ pub fn dim(color: Color, background: Color) -> Color {
     }
 }
 
-fn rgb(hex: u32) -> Color {
-    let [_, r, g, b] = hex.to_be_bytes();
-    Color::from_rgb8(r, g, b)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +127,20 @@ mod tests {
         assert_eq!(palette.indexed(196), Color::from_rgb8(255, 0, 0));
         assert_eq!(palette.indexed(232), Color::from_rgb8(8, 8, 8));
         assert_eq!(palette.indexed(255), Color::from_rgb8(238, 238, 238));
+    }
+
+    #[test]
+    fn follows_the_configured_colours() {
+        let mut colors = Colors::light();
+        colors.ansi[3] = Rgb(1, 2, 3);
+        let palette = Palette::from(&colors);
+        assert_eq!(palette.background, Color::from_rgb8(0xfa, 0xfa, 0xfa));
+        assert_eq!(palette.indexed(3), Color::from_rgb8(1, 2, 3));
+        // The default palette is the dark theme.
+        assert_eq!(
+            Palette::default().background,
+            Palette::from(&Colors::dark()).background
+        );
     }
 
     #[test]

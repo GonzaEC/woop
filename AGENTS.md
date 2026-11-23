@@ -19,6 +19,7 @@ Judge every change in this order; when two conflict, the earlier one wins, and a
    - Code that reads output before the emulator (the mark scanner in `woop-term`) must interpret it exactly as the emulator's parser does, checked against the parser's source; any difference lets crafted output slip past it. Test the variants: control characters, DEL and high bytes inside a sequence, numeric parameters, split reads.
    - Never type anything into the shell that the user did not, except the standard replies needed to run (cursor position, device attributes). Pasted text must not carry control sequences.
    - Bound every buffer, channel and history fed by program output.
+   - Programs Woop starts are resolved to an absolute path, from absolute `PATH` entries only, before they run: on Windows a bare name is otherwise looked up in the current directory, where anything could have been planted.
    - No `unsafe` without an ADR. Write files only to the user's own directories, with permissions that keep other users out. No network access except user-configured AI providers. Never log or store secrets.
    - Every new dependency needs a reason and an evaluation (maintenance, vulnerabilities, licence, `unsafe`, cost); see the [`add-dependency`](.claude/skills/add-dependency/SKILL.md) skill. Prefer the standard library and well-maintained crates.
    - `deny.toml`, `.github/workflows/` and `.github/dependabot.yml` are security controls: changing them is a security change. When a new advisory makes the dependency check fail, upgrade the crate; if that is impossible (the fix must come from upstream), add the advisory to `ignore` in `deny.toml` with how the crate reaches Woop and why the risk is acceptable, after a security review. Never weaken the policy to make CI pass.
@@ -62,9 +63,10 @@ Automated tests cannot judge how the window looks or feels (rendering, keyboard,
 
 - Stable Rust, edition 2024. No `unsafe` in Woop's own code without an ADR.
 - Every public item has a doc comment. Errors use `thiserror` enums per crate; avoid `unwrap()` outside tests.
-- Platform-specific code goes behind `cfg` attributes and must keep all three platforms compiling.
+- Platform-specific code goes behind `cfg` attributes and must keep all three platforms compiling, also under clippy: a `cfg` block inside a function can leave a `mut`, an import or a variable unused on the other platforms (CI rejects it). Prefer one small function per platform over `cfg` blocks inside a shared one.
 - Keep allocations and blocking calls off the render path.
 - Add tests with every behaviour change: unit tests next to the code, end-to-end tests in `tests/`. Prefer real processes over mocks for PTY behaviour.
+- A background thread that reports changes takes its starting state before the call that starts it returns, never inside the thread: a change made before the thread runs would otherwise be missed (this passed locally and failed on every CI runner).
 - Tests with real shells must not depend on timing. A shell may echo input before it prints its prompt, so match on content (for example, a line *ending* in the expected output) rather than on exact lines or order.
 - Tests run on all three platforms. Do not parse another platform's paths with `std::path`: on Unix, `Path` does not treat `\` as a separator.
 

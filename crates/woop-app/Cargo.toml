@@ -19,3 +19,4 @@ workspace = true
 [dependencies]
 iced.workspace = true
 woop-term.workspace = true
+woop-config.workspace = true
