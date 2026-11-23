@@ -39,6 +39,8 @@ pub enum WorkspaceAction {
     SplitDown,
     /// Move the focus to the neighbouring pane in this direction.
     Focus(Direction),
+    /// Open the command palette.
+    CommandPalette,
 }
 
 /// A direction to move the focus between panes.
@@ -357,7 +359,9 @@ fn workspace_shortcut(
     modifiers: WindowModifiers,
     shortcuts: Shortcuts,
 ) -> Option<WorkspaceAction> {
-    use WorkspaceAction::{ClosePane, Focus, NewTab, NextTab, PreviousTab, SplitDown, SplitRight};
+    use WorkspaceAction::{
+        ClosePane, CommandPalette, Focus, NewTab, NextTab, PreviousTab, SplitDown, SplitRight,
+    };
 
     if let WindowKey::Named(Named::Tab) = key
         && modifiers.control()
@@ -400,6 +404,7 @@ fn workspace_shortcut(
                 ('w', false) => Some(ClosePane),
                 ('d', false) => Some(SplitRight),
                 ('d', true) => Some(SplitDown),
+                ('p', true) => Some(CommandPalette),
                 _ => None,
             }
         }
@@ -412,6 +417,7 @@ fn workspace_shortcut(
                 'w' => Some(ClosePane),
                 'd' => Some(SplitRight),
                 'e' => Some(SplitDown),
+                'p' => Some(CommandPalette),
                 _ => None,
             }
         }
@@ -1093,6 +1099,28 @@ mod tests {
         assert_eq!(
             key_press(&character("T"), ctrl_shift, None, context),
             Some(KeyAction::Workspace(WorkspaceAction::NewTab))
+        );
+    }
+
+    #[test]
+    fn the_command_palette_shortcut() {
+        let palette = Some(KeyAction::Workspace(WorkspaceAction::CommandPalette));
+        let ctrl_shift = WindowModifiers::CTRL | WindowModifiers::SHIFT;
+        for shortcuts in [Shortcuts::Windows, Shortcuts::Unix] {
+            assert_eq!(workspace(shortcuts, character("P"), ctrl_shift), palette);
+        }
+        assert_eq!(
+            workspace(
+                Shortcuts::MacOs,
+                character("P"),
+                WindowModifiers::LOGO | WindowModifiers::SHIFT
+            ),
+            palette
+        );
+        // Ctrl+P (history in shells) stays with the shell.
+        assert_eq!(
+            workspace(Shortcuts::Unix, character("p"), WindowModifiers::CTRL),
+            input(&[0x10])
         );
     }
 }

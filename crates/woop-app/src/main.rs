@@ -5,6 +5,7 @@ mod editor;
 mod gate;
 mod history;
 mod keys;
+mod palette;
 mod pane;
 mod theme;
 mod view;
@@ -14,13 +15,14 @@ use std::collections::HashMap;
 use iced::futures::channel::mpsc::{self, UnboundedSender};
 use iced::futures::{SinkExt, Stream, StreamExt};
 use iced::widget::pane_grid::{self, PaneGrid};
-use iced::widget::{button, column, container, keyed_column, row, text};
-use iced::{Background, Border, Element, Length, Subscription, Task};
+use iced::widget::{button, column, container, keyed_column, mouse_area, row, stack, text};
+use iced::{Background, Border, Element, Length, Subscription, Task, keyboard};
 use woop_term::{ShellCommand, TerminalSize, shell_integration};
 
 use history::History;
 use keys::{Direction, KeyAction, WorkspaceAction};
-use pane::{Pane, PaneId};
+use palette::{Command, Outcome, Palette as CommandPalette};
+use pane::{Pane, PaneCommand, PaneId};
 use theme::Palette;
 use view::Metrics;
 use woop_config::Config;
@@ -57,6 +59,12 @@ pub enum Message {
     SelectTab(usize),
     /// The configuration file changed on disk.
     ConfigChanged,
+    /// A key was pressed while the command palette is open.
+    PaletteKey(keyboard::Key, keyboard::Modifiers, Option<String>),
+    /// A command was clicked in the command palette.
+    PaletteRun(Command),
+    /// The command palette was dismissed with a click outside it.
+    PaletteClose,
 }
 
 /// Most different font family names kept during one run (ADR 0020).
@@ -97,6 +105,11 @@ struct Woop {
     /// Font family names given to iced, which keeps them for the whole
     /// program; each distinct name is kept once.
     font_names: Vec<&'static str>,
+    /// The command palette, while it is open. It then takes every key.
+    command_palette: Option<CommandPalette>,
+    /// The pane focused when the palette opened: its commands act on that
+    /// pane only.
+    palette_target: Option<PaneId>,
 }
 
 impl Woop {
@@ -114,6 +127,8 @@ impl Woop {
             config: Config::default(),
             config_error: None,
             font_names: Vec::new(),
+            command_palette: None,
+            palette_target: None,
         };
         woop.reload_config();
         woop
@@ -197,7 +212,10 @@ impl Woop {
                 return task;
             }
             Message::Pane(_, pane::Message::Key(KeyAction::Workspace(action))) => {
-                return self.workspace(action);
+                // Read by a pane just before the palette opened.
+                if self.command_palette.is_none() {
+                    return self.workspace(action);
+                }
             }
             Message::Pane(id, message) => {
                 if matches!(
@@ -212,8 +230,9 @@ impl Woop {
                 }
                 // Keys handled in one batch with a focus change were read by
                 // the pane that had the focus before; they must not reach a
-                // shell the user is no longer looking at.
-                if !accepts(self.focused(), id, &message) {
+                // shell the user is no longer looking at. While the command
+                // palette is open it takes every key.
+                if !accepts(self.focused(), self.command_palette.is_some(), id, &message) {
                     return task;
                 }
                 if let Some(pane) = self.panes.get_mut(&id) {
@@ -241,6 +260,30 @@ impl Woop {
                 }
             }
             Message::ConfigChanged => self.reload_config(),
+            Message::PaletteKey(key, modifiers, text) => {
+                // The palette's own shortcut closes it again.
+                let toggle = keys::key_press(&key, modifiers, None, self.idle_key_context())
+                    == Some(KeyAction::Workspace(WorkspaceAction::CommandPalette));
+                let Some(palette) = &mut self.command_palette else {
+                    return Task::none();
+                };
+                let outcome = if toggle {
+                    Outcome::Close
+                } else {
+                    palette.key(&key, modifiers, text.as_deref())
+                };
+                match outcome {
+                    Outcome::Stay => {}
+                    Outcome::Close => return self.close_palette(),
+                    Outcome::Run(command) => return self.run_command(command),
+                }
+            }
+            Message::PaletteRun(command) => {
+                if self.command_palette.is_some() {
+                    return self.run_command(command);
+                }
+            }
+            Message::PaletteClose => return self.close_palette(),
         }
         Task::none()
     }
@@ -255,7 +298,7 @@ impl Woop {
             let focused = handle == tab.focus;
             let content = match self.panes.get(&id) {
                 Some(pane) => pane
-                    .view(palette, focused)
+                    .view(palette, focused && self.command_palette.is_none())
                     .map(move |m| Message::Pane(id, m)),
                 None => text("").into(),
             };
@@ -305,19 +348,195 @@ impl Woop {
         // Keyed by the tab, so switching tabs gives each its own widget
         // state (grid sizes, editor focus) instead of reusing another's.
         let grid = keyed_column([(tab.id, Element::from(grid))]).height(Length::Fill);
-        container(layout.push(grid))
-            .style(move |_theme| container::Style {
-                background: Some(Background::Color(background)),
-                ..container::Style::default()
-            })
-            .into()
+        let window = container(layout.push(grid)).style(move |_theme| container::Style {
+            background: Some(Background::Color(background)),
+            ..container::Style::default()
+        });
+        // The same structure whether the palette is open or not, so opening
+        // it does not rebuild the panes' widget state.
+        let mut layers = stack![window];
+        if let Some(command_palette) = &self.command_palette {
+            layers = layers.push(self.palette_view(command_palette));
+        }
+        layers.into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::batch([
+        let mut subscriptions = vec![
             Subscription::run(output_listener),
             Subscription::run(config_listener),
-        ])
+        ];
+        // Keys reach the command palette only while it is open; the panes
+        // take none meanwhile, so none is captured before it.
+        if self.command_palette.is_some() {
+            subscriptions.push(keyboard::listen().filter_map(palette_key));
+        }
+        Subscription::batch(subscriptions)
+    }
+
+    /// Key meanings with nothing selected and no editor, for shortcuts that
+    /// do not depend on a pane.
+    fn idle_key_context(&self) -> keys::KeyContext {
+        keys::KeyContext {
+            mode: woop_term::TerminalMode::default(),
+            has_selection: false,
+            shortcuts: keys::Shortcuts::platform(),
+            editor_active: false,
+        }
+    }
+
+    fn close_palette(&mut self) -> Task<Message> {
+        self.command_palette = None;
+        self.palette_target = None;
+        self.focus_current()
+    }
+
+    /// Runs a command chosen in the command palette, which closes.
+    fn run_command(&mut self, command: Command) -> Task<Message> {
+        let target = self.palette_target;
+        let task = self.close_palette();
+        // Kept while the command runs, for the pane commands.
+        self.palette_target = target;
+        let run = match command {
+            Command::NewTab => self.workspace(WorkspaceAction::NewTab),
+            Command::ClosePane => self.workspace(WorkspaceAction::ClosePane),
+            Command::NextTab => self.workspace(WorkspaceAction::NextTab),
+            Command::PreviousTab => self.workspace(WorkspaceAction::PreviousTab),
+            Command::SplitRight => self.workspace(WorkspaceAction::SplitRight),
+            Command::SplitDown => self.workspace(WorkspaceAction::SplitDown),
+            Command::FocusLeft => self.workspace(WorkspaceAction::Focus(Direction::Left)),
+            Command::FocusRight => self.workspace(WorkspaceAction::Focus(Direction::Right)),
+            Command::FocusUp => self.workspace(WorkspaceAction::Focus(Direction::Up)),
+            Command::FocusDown => self.workspace(WorkspaceAction::Focus(Direction::Down)),
+            Command::CopyLastCommandLine => {
+                self.send_to_focused(pane::Message::Command(PaneCommand::CopyLastCommand))
+            }
+            Command::CopyLastOutput => {
+                self.send_to_focused(pane::Message::Command(PaneCommand::CopyLastOutput))
+            }
+            Command::ToggleLastOutput => {
+                self.send_to_focused(pane::Message::Command(PaneCommand::ToggleLastOutput))
+            }
+            Command::ScrollToBottom => {
+                self.send_to_focused(pane::Message::Command(PaneCommand::ScrollToBottom))
+            }
+            Command::PreviousBlock => {
+                self.send_to_focused(pane::Message::Key(KeyAction::JumpBlock(-1)))
+            }
+            Command::NextBlock => self.send_to_focused(pane::Message::Key(KeyAction::JumpBlock(1))),
+            Command::CopySelection => self.send_to_focused(pane::Message::Key(KeyAction::Copy)),
+            Command::Paste => self.send_to_focused(pane::Message::Key(KeyAction::Paste)),
+            Command::CopyConfigPath => match woop_config::path() {
+                Some(path) => iced::clipboard::write(path.display().to_string()),
+                None => Task::none(),
+            },
+            Command::ReloadConfig => {
+                self.reload_config();
+                Task::none()
+            }
+        };
+        self.palette_target = None;
+        Task::batch([task, run])
+    }
+
+    /// Sends a message to the focused pane.
+    fn send_to_focused(&mut self, message: pane::Message) -> Task<Message> {
+        // Only to the pane the palette was opened for: if it closed in the
+        // meantime, another pane now has the focus and the user did not
+        // choose it.
+        match self.focused() {
+            Some(id) if still_target(self.palette_target, id) => {
+                self.update(Message::Pane(id, message))
+            }
+            _ => Task::none(),
+        }
+    }
+
+    /// The command palette, drawn over the panes. A click outside it closes
+    /// it.
+    fn palette_view<'a>(&'a self, command_palette: &'a CommandPalette) -> Element<'a, Message> {
+        /// Commands shown at once; the list follows the chosen one.
+        const VISIBLE: usize = 12;
+        let palette = &self.palette;
+        let metrics = self.metrics;
+        let muted = theme::dim(palette.foreground, palette.background);
+        let shortcuts = keys::Shortcuts::platform();
+        let matches = command_palette.matches();
+        let selected = command_palette.selected();
+        let first = selected.saturating_sub(VISIBLE - 1);
+
+        let line = |label: String, color: iced::Color| {
+            text(label)
+                .font(metrics.font)
+                .size(metrics.font_size)
+                .color(color)
+                .wrapping(iced::widget::text::Wrapping::None)
+        };
+        let search = if command_palette.query().is_empty() {
+            line("Type a command".to_owned(), muted)
+        } else {
+            line(
+                format!("{}\u{2502}", command_palette.query()),
+                palette.foreground,
+            )
+        };
+        let items =
+            matches
+                .iter()
+                .enumerate()
+                .skip(first)
+                .take(VISIBLE)
+                .map(|(index, &command)| {
+                    let background = if index == selected {
+                        palette.selection
+                    } else {
+                        palette.background
+                    };
+                    let shortcut = command.shortcut(shortcuts).unwrap_or("");
+                    button(
+                        row![
+                            line(command.label().to_owned(), palette.foreground)
+                                .width(Length::Fill),
+                            line(shortcut.to_owned(), muted),
+                        ]
+                        .spacing(16),
+                    )
+                    .on_press(Message::PaletteRun(command))
+                    .width(Length::Fill)
+                    .style(move |_theme, _status| button::Style {
+                        background: Some(Background::Color(background)),
+                        ..button::Style::default()
+                    })
+                    .into()
+                });
+        let mut list = column![search].spacing(4);
+        if matches.is_empty() {
+            list = list.push(line("No command matches".to_owned(), muted));
+        }
+        let list = list.extend(items);
+
+        let (background, outline) = (palette.background, palette.cursor);
+        let panel = container(list)
+            .width(Length::Fixed(560.0))
+            .padding(8)
+            .style(move |_theme| container::Style {
+                background: Some(Background::Color(background)),
+                border: Border {
+                    color: outline,
+                    width: 1.0,
+                    radius: 4.0.into(),
+                },
+                ..container::Style::default()
+            });
+        let overlay = container(iced::widget::opaque(panel))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .padding(iced::Padding {
+                top: 48.0,
+                ..iced::Padding::ZERO
+            });
+        iced::widget::opaque(mouse_area(overlay).on_press(Message::PaletteClose))
     }
 
     /// A row of buttons, one per tab, named after each tab's focused pane.
@@ -393,6 +612,11 @@ impl Woop {
         }
         match action {
             WorkspaceAction::NewTab => self.new_tab(),
+            WorkspaceAction::CommandPalette => {
+                self.command_palette = Some(CommandPalette::default());
+                self.palette_target = self.focused();
+                Task::none()
+            }
             WorkspaceAction::ClosePane => {
                 let Some(id) = self.focused() else {
                     return Task::none();
@@ -538,10 +762,22 @@ impl Woop {
     }
 }
 
+/// Whether a command from the palette may act on the focused pane `id`: it
+/// must be the pane focused when the palette opened.
+fn still_target(target: Option<PaneId>, id: PaneId) -> bool {
+    target == Some(id)
+}
+
 /// Whether pane `id` may handle `message` while `focused` has the focus:
-/// keyboard input only reaches the focused pane.
-fn accepts(focused: Option<PaneId>, id: PaneId, message: &pane::Message) -> bool {
-    !message.is_keyboard_input() || focused == Some(id)
+/// keyboard input only reaches the focused pane, and none while the command
+/// palette is open.
+fn accepts(
+    focused: Option<PaneId>,
+    palette_open: bool,
+    id: PaneId,
+    message: &pane::Message,
+) -> bool {
+    !message.is_keyboard_input() || (focused == Some(id) && !palette_open)
 }
 
 /// Most characters of a title shown on a tab.
@@ -573,6 +809,23 @@ fn close_prompt() -> &'static str {
         keys::Shortcuts::Windows | keys::Shortcuts::Unix => {
             "A command is still running: press Ctrl+Shift+W again to close it"
         }
+    }
+}
+
+/// Turns a key press into a message for the open command palette.
+fn palette_key(event: keyboard::Event) -> Option<Message> {
+    match event {
+        keyboard::Event::KeyPressed {
+            key,
+            modifiers,
+            text,
+            ..
+        } => Some(Message::PaletteKey(
+            key,
+            modifiers,
+            text.map(|text| text.to_string()),
+        )),
+        _ => None,
     }
 }
 
@@ -618,25 +871,44 @@ mod tests {
     fn keyboard_input_only_reaches_the_focused_pane() {
         use keys::KeyAction;
         let typed = pane::Message::Key(KeyAction::Input(b"rm -rf build\r".to_vec()));
-        assert!(accepts(Some(1), 1, &typed));
+        assert!(accepts(Some(1), false, 1, &typed));
         // Read by pane 1 just before the focus moved to pane 2.
-        assert!(!accepts(Some(2), 1, &typed));
-        assert!(!accepts(None, 1, &typed));
+        assert!(!accepts(Some(2), false, 1, &typed));
+        assert!(!accepts(None, false, 1, &typed));
         assert!(!accepts(
             Some(2),
+            false,
             1,
             &pane::Message::Pasted(Some("text".into()))
         ));
-        assert!(!accepts(Some(2), 1, &pane::Message::Key(KeyAction::Paste)));
+        assert!(!accepts(
+            Some(2),
+            false,
+            1,
+            &pane::Message::Key(KeyAction::Paste)
+        ));
         // Clicks and output-driven updates are not keyboard input: a click
         // focuses its pane first.
-        assert!(accepts(Some(2), 1, &pane::Message::PasteClicked));
-        assert!(accepts(Some(2), 1, &pane::Message::Scroll(3)));
+        assert!(accepts(Some(2), false, 1, &pane::Message::PasteClicked));
+        assert!(accepts(Some(2), false, 1, &pane::Message::Scroll(3)));
         assert!(accepts(
             Some(2),
+            false,
             1,
             &pane::Message::Resized(TerminalSize::new(10, 40))
         ));
+        // The open command palette takes every key, even from the focused
+        // pane, while output still reaches it.
+        assert!(!accepts(Some(1), true, 1, &typed));
+        assert!(accepts(Some(1), true, 1, &pane::Message::Scroll(3)));
+    }
+
+    #[test]
+    fn palette_commands_act_only_on_the_pane_they_were_opened_for() {
+        assert!(still_target(Some(1), 1));
+        // Pane 1 closed while the palette was open; pane 2 got the focus.
+        assert!(!still_target(Some(1), 2));
+        assert!(!still_target(None, 2));
     }
 
     #[test]

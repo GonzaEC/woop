@@ -51,6 +51,21 @@ pub enum Message {
     FocusEditor,
     /// The pane was right-clicked: paste the clipboard.
     PasteClicked,
+    /// A command chosen in the command palette.
+    Command(PaneCommand),
+}
+
+/// Commands from the command palette that act on one pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneCommand {
+    /// Copy the last finished command.
+    CopyLastCommand,
+    /// Copy the output of the last finished command.
+    CopyLastOutput,
+    /// Collapse or expand the output of the last finished command.
+    ToggleLastOutput,
+    /// Move the view back to the latest output.
+    ScrollToBottom,
 }
 
 impl Message {
@@ -298,6 +313,7 @@ impl Pane {
             Message::EditorPress(press) => return self.editor_press(press, history),
             Message::FocusEditor => return self.focus(),
             Message::PasteClicked => return clipboard::read().map(Message::Pasted),
+            Message::Command(command) => return self.run(command),
         }
         Task::none()
     }
@@ -576,6 +592,40 @@ impl Pane {
             }
             // Edit is resolved by the caller; Ignore does nothing.
             EditorKey::Edit | EditorKey::Ignore => {}
+        }
+        Task::none()
+    }
+
+    /// Runs a command from the command palette.
+    fn run(&mut self, command: PaneCommand) -> Task<Message> {
+        let last = self
+            .session
+            .terminal()
+            .blocks()
+            .iter()
+            .rfind(|block| block.state() == woop_term::BlockState::Finished)
+            .map(woop_term::Block::id);
+        match (command, last) {
+            (PaneCommand::ScrollToBottom, _) => self.scroll_to_bottom(),
+            (PaneCommand::CopyLastCommand, Some(id)) => {
+                // Read from what is displayed, as when copying from the bar.
+                if let Some(command) = self.session.terminal().block_command(id) {
+                    return clipboard::write(command);
+                }
+            }
+            (PaneCommand::CopyLastOutput, Some(id)) => {
+                // Selected first, so the user sees what was copied.
+                if self.session.terminal_mut().select_block_output(id) {
+                    return self.copy_grid_selection();
+                }
+            }
+            (PaneCommand::ToggleLastOutput, Some(id)) => {
+                if self.session.terminal_mut().toggle_collapsed(id).is_some() {
+                    self.refresh();
+                }
+            }
+            // No command has finished yet.
+            (_, None) => self.notice = Some("No command has finished in this pane yet"),
         }
         Task::none()
     }
