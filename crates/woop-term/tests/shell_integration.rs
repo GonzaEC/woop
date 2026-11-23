@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use woop_term::shell_integration::{self, MarkToken};
+use woop_term::shell_integration;
 use woop_term::{BlockState, Session, ShellCommand, TerminalSize, input};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -50,17 +50,12 @@ fn finished(session: &Session) -> usize {
         .count()
 }
 
-/// Starts `command` with the integration loaded, accepting only marks that
-/// carry the session's token, as Woop does: blocks then prove that the
+/// Starts `command` as Woop does, with the integration loaded and only
+/// marks carrying the session's token accepted: blocks then prove that the
 /// script signs every mark.
 fn start(command: ShellCommand) -> Session {
-    let token = MarkToken::generate();
-    let mut session = Session::spawn(
-        &shell_integration::apply(command, &token),
-        TerminalSize::new(24, 100),
-    )
-    .expect("spawn");
-    session.terminal_mut().require_mark_token(&token);
+    let mut session =
+        shell_integration::spawn(command, TerminalSize::new(24, 100), || {}).expect("spawn");
     let ready = session
         .wait_until(TIMEOUT, |term| {
             term.blocks()

@@ -12,8 +12,8 @@ use woop_term::{
     BlockState, Cell, CursorShape, Screen, ScreenBlock, SelectionKind, SelectionPoint, TerminalSize,
 };
 
-use crate::Message;
 use crate::keys;
+use crate::pane::Message;
 use crate::theme::{self, Palette};
 
 /// Space between the window edge and the grid, in logical pixels.
@@ -98,6 +98,8 @@ pub struct TerminalView<'a> {
     pub metrics: Metrics,
     /// What key presses mean right now.
     pub keys: keys::KeyContext,
+    /// This pane has the keyboard focus; other panes ignore key presses.
+    pub takes_keys: bool,
     /// Cached geometry, cleared whenever the screen changes.
     pub cache: &'a canvas::Cache,
 }
@@ -147,6 +149,7 @@ impl canvas::Program<Message> for TerminalView<'_> {
             state.modifiers = *modifiers;
         }
         match event {
+            Event::Keyboard(keyboard::Event::KeyPressed { .. }) if !self.takes_keys => None,
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key,
                 modifiers,
@@ -159,7 +162,7 @@ impl canvas::Program<Message> for TerminalView<'_> {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Right))
                 if cursor.is_over(bounds) =>
             {
-                Some(Action::publish(Message::Key(keys::KeyAction::Paste)).and_capture())
+                Some(Action::publish(Message::PasteClicked).and_capture())
             }
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let position = cursor.position_in(bounds)?;
@@ -620,6 +623,7 @@ mod tests {
                 shortcuts: keys::Shortcuts::platform(),
                 editor_active: false,
             },
+            takes_keys: true,
             cache: &cache,
         };
 

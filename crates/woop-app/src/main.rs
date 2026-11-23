@@ -1,29 +1,28 @@
-//! Woop application entry point.
+//! Woop application entry point: the window, its tabs and their panes
+//! (ADR 0019).
 
 mod editor;
 mod gate;
 mod history;
 mod keys;
+mod pane;
 mod theme;
 mod view;
 
-use std::sync::Arc;
+use std::collections::HashMap;
 
 use iced::futures::channel::mpsc::{self, UnboundedSender};
 use iced::futures::{SinkExt, Stream, StreamExt};
-use iced::widget::text_editor::{self, Content};
-use iced::widget::{canvas, column};
-use iced::{Element, Length, Subscription, Task, clipboard};
-use woop_term::{
-    Screen, SelectionKind, SelectionPoint, Session, ShellCommand, Terminal, TerminalEvent,
-    TerminalSize, input, shell_integration,
-};
+use iced::widget::pane_grid::{self, PaneGrid};
+use iced::widget::{button, column, container, keyed_column, row, text};
+use iced::{Background, Border, Element, Length, Subscription, Task};
+use woop_term::{ShellCommand, TerminalSize, shell_integration};
 
-use gate::{Consumed, Gate};
 use history::History;
-use keys::{EditorKey, KeyAction};
+use keys::{Direction, KeyAction, WorkspaceAction};
+use pane::{Pane, PaneId};
 use theme::Palette;
-use view::{Metrics, TerminalView};
+use view::Metrics;
 
 const FONT_SIZE: f32 = 14.0;
 const INITIAL_SIZE: TerminalSize = TerminalSize {
@@ -41,628 +40,511 @@ fn main() -> iced::Result {
         .run()
 }
 
-/// Messages handled by the application.
+/// Messages handled by the window.
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// The output listener is running; the session can be started.
-    ListenerReady(UnboundedSender<()>),
-    /// The shell produced output.
-    Output,
-    /// A key was pressed on the grid.
-    Key(KeyAction),
-    /// The mouse wheel scrolled by a number of lines (positive is up).
-    Scroll(i32),
-    /// The grid area changed size.
-    Resized(TerminalSize),
-    /// Clipboard contents arrived for pasting.
-    Pasted(Option<String>),
-    /// The left button was pressed: start a new selection.
-    SelectionStarted(SelectionPoint, SelectionKind),
-    /// The mouse moved while selecting.
-    SelectionExtended(SelectionPoint),
-    /// A block's bar was clicked: select that block's output.
-    SelectBlockOutput(u64),
-    /// A block's bar was double-clicked: collapse or expand its output.
-    ToggleCollapse(u64),
-    /// A block's bar was Alt+clicked: copy its command.
-    CopyBlockCommand(u64),
-    /// The command editor's text or cursor changed through the mouse or an
-    /// input method.
-    EditorAction(text_editor::Action),
-    /// A key was pressed in the command editor; what it means is decided
-    /// when the message is handled ([`Woop::editor_press`]).
-    EditorPress(text_editor::KeyPress),
-    /// The command editor's panel was clicked: keep the keyboard on it.
-    FocusEditor,
+    /// The output listener is running; sessions can be started.
+    ListenerReady(UnboundedSender<PaneId>),
+    /// A pane's shell produced output.
+    Output(PaneId),
+    /// A message for one pane.
+    Pane(PaneId, pane::Message),
+    /// A pane of the shown tab was clicked.
+    PaneClicked(pane_grid::Pane),
+    /// The split between two panes was dragged.
+    PaneResized(pane_grid::ResizeEvent),
+    /// A tab was clicked.
+    SelectTab(usize),
+}
+
+/// The layout of one tab's panes, and which one has the focus.
+struct Tab {
+    /// Stable identifier, so each tab keeps its own widget state: the pane
+    /// grids of different tabs number their panes alike.
+    id: u64,
+    grid: pane_grid::State<PaneId>,
+    focus: pane_grid::Pane,
 }
 
 struct Woop {
-    session: Option<Session>,
-    screen: Screen,
-    size: TerminalSize,
+    /// Sends a pane's id when its session has output; set once the
+    /// listener runs.
+    output: Option<UnboundedSender<PaneId>>,
+    panes: HashMap<PaneId, Pane>,
+    tabs: Vec<Tab>,
+    /// Index of the tab shown.
+    active: usize,
+    next_id: PaneId,
+    /// Commands submitted from any pane's editor.
+    history: History,
     palette: Palette,
     metrics: Metrics,
-    cache: canvas::Cache,
-    title: Option<String>,
-    /// Text of the command editor (ADR 0016).
-    editor: Content,
-    history: History,
-    /// The editor turned on at least once (the shell has integration), so
-    /// its panel is shown from then on.
-    integration: bool,
-    /// Which prompt the editor takes the keys for.
-    gate: Gate,
-    /// Lines of text the editor's panel has room for. It grows while
-    /// editing and shrinks back at a new prompt or once the editor is empty.
-    panel_lines: usize,
-    /// A message shown on the panel until the text changes.
-    notice: Option<&'static str>,
+    /// A pane whose command is still running was asked to close; asking
+    /// again closes it.
+    pending_close: Option<PaneId>,
 }
 
 impl Woop {
     fn new() -> Self {
-        let size = INITIAL_SIZE;
         Self {
-            session: None,
-            screen: woop_term::Terminal::new(size).screen(),
-            size,
+            output: None,
+            panes: HashMap::new(),
+            tabs: Vec::new(),
+            active: 0,
+            next_id: 0,
+            history: History::default(),
             palette: Palette::default(),
             metrics: Metrics::measure(view::default_font(), FONT_SIZE),
-            cache: canvas::Cache::new(),
-            title: None,
-            editor: Content::new(),
-            history: History::default(),
-            integration: false,
-            gate: Gate::default(),
-            panel_lines: 1,
-            notice: None,
+            pending_close: None,
         }
     }
 
     fn title(&self) -> String {
-        match &self.title {
-            Some(title) if !title.is_empty() => format!("{title} - {APP_NAME}"),
-            _ => APP_NAME.to_owned(),
+        match self.focused().and_then(|id| self.panes.get(&id)?.title()) {
+            Some(title) => format!("{title} - {APP_NAME}"),
+            None => APP_NAME.to_owned(),
         }
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
-        // Clicking the grid takes the focus away from the editor; it is
-        // given back so that typing keeps going to the editor.
-        let clicked = matches!(
-            message,
-            Message::SelectionStarted(..)
-                | Message::SelectBlockOutput(_)
-                | Message::ToggleCollapse(_)
-                | Message::CopyBlockCommand(_)
-        );
-        let was_active = self.editor_active();
-        let task = self.handle(message);
-
-        let turned_on = self
-            .gate
-            .observe(self.screen.awaiting_command, self.screen.command_prompt);
-        if turned_on {
-            self.integration = true;
-            self.notice = None;
-            // The panel only shrinks here, never while a command starts.
-            self.panel_lines = editor::lines_for(&self.editor);
-        }
-        if self.editor_active() != was_active {
-            // The grid's cursor is hidden while the editor is active.
-            self.cache.clear();
-        }
-        if self.editor_active() && (clicked || turned_on) {
-            Task::batch([task, editor::focus()])
-        } else {
-            task
-        }
-    }
-
-    fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::ListenerReady(sender) => self.start_session(sender),
-            Message::Output => return self.process_output(),
-            Message::Key(KeyAction::Input(bytes)) => {
-                self.scroll_to_bottom();
-                self.write(&bytes);
-            }
-            Message::Key(KeyAction::Paste) => return clipboard::read().map(Message::Pasted),
-            Message::Key(KeyAction::Copy) => return self.copy_grid_selection(),
-            Message::SelectionStarted(point, kind) => {
-                if let Some(session) = &mut self.session {
-                    session.terminal_mut().start_selection(kind, point);
-                    self.refresh();
+            Message::ListenerReady(sender) => {
+                if self.output.is_none() {
+                    self.output = Some(sender);
+                    return self.new_tab();
                 }
             }
-            Message::SelectionExtended(point) => {
-                if let Some(session) = &mut self.session {
-                    session.terminal_mut().extend_selection(point);
-                    self.refresh();
+            Message::Output(id) => {
+                let Some(pane) = self.panes.get_mut(&id) else {
+                    return Task::none();
+                };
+                let task = pane.process_output().map(move |m| Message::Pane(id, m));
+                // A pane closes when its shell exits.
+                if pane.is_closed() {
+                    return Task::batch([task, self.close_pane(id)]);
+                }
+                return task;
+            }
+            Message::Pane(_, pane::Message::Key(KeyAction::Workspace(action))) => {
+                return self.workspace(action);
+            }
+            Message::Pane(id, message) => {
+                if matches!(
+                    message,
+                    pane::Message::Key(_) | pane::Message::EditorPress(_)
+                ) {
+                    self.pending_close = None;
+                }
+                let mut task = Task::none();
+                if message.is_click() {
+                    task = self.focus_pane(id);
+                }
+                // Keys handled in one batch with a focus change were read by
+                // the pane that had the focus before; they must not reach a
+                // shell the user is no longer looking at.
+                if !accepts(self.focused(), id, &message) {
+                    return task;
+                }
+                if let Some(pane) = self.panes.get_mut(&id) {
+                    let update = pane
+                        .update(message, &mut self.history)
+                        .map(move |m| Message::Pane(id, m));
+                    task = Task::batch([task, update]);
+                }
+                return task;
+            }
+            Message::PaneClicked(handle) => {
+                if let Some(id) = self.tab().and_then(|tab| tab.grid.get(handle).copied()) {
+                    return self.focus_pane(id);
                 }
             }
-            Message::SelectBlockOutput(id) => {
-                if let Some(session) = &mut self.session
-                    && session.terminal_mut().select_block_output(id)
-                {
-                    self.refresh();
+            Message::PaneResized(event) => {
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    tab.grid.resize(event.split, event.ratio);
                 }
             }
-            Message::ToggleCollapse(id) => {
-                if let Some(session) = &mut self.session
-                    && session.terminal_mut().toggle_collapsed(id).is_some()
-                {
-                    self.refresh();
-                }
-            }
-            Message::CopyBlockCommand(id) => {
-                // Read now, from what is displayed, not from what the line
-                // held when the command was submitted.
-                if let Some(command) = self
-                    .session
-                    .as_ref()
-                    .and_then(|session| session.terminal().block_command(id))
-                {
-                    return clipboard::write(command);
-                }
-            }
-            Message::Key(KeyAction::JumpBlock(direction)) => {
-                if let Some(session) = &mut self.session
-                    && session.terminal_mut().jump_to_block(direction)
-                {
-                    self.refresh();
-                }
-            }
-            Message::Key(KeyAction::ScrollPages(pages)) => {
-                self.scroll(pages * i32::from(self.size.rows.saturating_sub(1).max(1)));
-            }
-            Message::Scroll(lines) => self.scroll(lines),
-            Message::Resized(size) => {
-                self.size = size;
-                if let Some(session) = &mut self.session {
-                    if let Err(error) = session.resize(size) {
-                        eprintln!("woop: failed to resize: {error}");
-                    }
-                    self.refresh();
-                }
-            }
-            Message::Pasted(Some(text)) => {
-                if self.editor_active() {
-                    self.paste_into_editor(text);
-                } else {
-                    self.paste_into_shell(&text);
-                }
-            }
-            // The clipboard holds no text (an image, for example): say so,
-            // rather than doing nothing.
-            Message::Pasted(None) => {
-                if self.editor_active() {
-                    self.notice = Some("The clipboard has no text to paste");
-                }
-            }
-            Message::EditorAction(action) => {
-                if self.editor_active() {
-                    self.edit(action);
-                } else if let text_editor::Action::Edit(text_editor::Edit::Paste(text)) = action {
-                    // Text from an input method, committed just after the
-                    // editor turned off: it belongs to the shell now.
-                    self.paste_into_shell(&text);
-                }
-            }
-            Message::EditorPress(press) => return self.editor_press(press),
-            Message::FocusEditor => {
-                if self.editor_active() {
-                    return editor::focus();
+            Message::SelectTab(index) => {
+                if index < self.tabs.len() {
+                    self.active = index;
+                    return self.focus_current();
                 }
             }
         }
         Task::none()
     }
 
-    /// What key presses mean right now.
-    fn key_context(&self) -> keys::KeyContext {
-        let terminal = self.session.as_ref().map(Session::terminal);
-        keys::KeyContext {
-            mode: terminal.map(Terminal::mode).unwrap_or_default(),
-            has_selection: terminal.is_some_and(Terminal::has_selection),
-            shortcuts: keys::Shortcuts::platform(),
-            editor_active: self.editor_active(),
-        }
-    }
-
     fn view(&self) -> Element<'_, Message> {
-        let keys = self.key_context();
-        let grid = canvas(TerminalView {
-            screen: &self.screen,
-            palette: &self.palette,
-            metrics: self.metrics,
-            keys,
-            cache: &self.cache,
+        let Some(tab) = self.tab() else {
+            return container(text("")).into();
+        };
+        let several = tab.grid.len() > 1;
+        let palette = &self.palette;
+        let grid = PaneGrid::new(&tab.grid, |handle, &id, _maximized| {
+            let focused = handle == tab.focus;
+            let content = match self.panes.get(&id) {
+                Some(pane) => pane
+                    .view(palette, focused)
+                    .map(move |m| Message::Pane(id, m)),
+                None => text("").into(),
+            };
+            // With several panes, the focused one is outlined.
+            let outline = if several && focused {
+                palette.cursor
+            } else {
+                palette.separator
+            };
+            pane_grid::Content::new(content).style(move |_theme| container::Style {
+                border: Border {
+                    color: outline,
+                    width: if several { 1.0 } else { 0.0 },
+                    radius: 0.0.into(),
+                },
+                ..container::Style::default()
+            })
         })
+        .on_click(Message::PaneClicked)
+        .on_resize(8, Message::PaneResized)
+        .spacing(2)
         .width(Length::Fill)
         .height(Length::Fill);
 
-        if !self.panel_visible() {
-            return grid.into();
+        let mut layout = column![];
+        if self.tabs.len() > 1 {
+            layout = layout.push(self.tab_bar());
         }
-        let panel = editor::panel(editor::Panel {
-            content: &self.editor,
-            status: self.gate.status(self.screen.command_prompt),
-            lines: self.panel_lines,
-            keys,
-            notice: self.notice,
-            palette: &self.palette,
-            metrics: self.metrics,
-        });
-        column![grid, panel].into()
+        if self.pending_close.is_some() {
+            layout = layout.push(
+                container(
+                    text(close_prompt())
+                        .font(self.metrics.font)
+                        .size(self.metrics.font_size)
+                        .color(palette.failure),
+                )
+                .padding(4),
+            );
+        }
+        let background = palette.background;
+        // Keyed by the tab, so switching tabs gives each its own widget
+        // state (grid sizes, editor focus) instead of reusing another's.
+        let grid = keyed_column([(tab.id, Element::from(grid))]).height(Length::Fill);
+        container(layout.push(grid))
+            .style(move |_theme| container::Style {
+                background: Some(Background::Color(background)),
+                ..container::Style::default()
+            })
+            .into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
         Subscription::run(output_listener)
     }
 
-    /// The editor takes the keys ([`Gate`]).
-    fn editor_active(&self) -> bool {
-        self.session.is_some() && self.gate.is_active()
-    }
-
-    /// The editor's panel is shown once the shell reported a prompt, except
-    /// while a full-screen application uses the window.
-    fn panel_visible(&self) -> bool {
-        self.integration
-            && !self
-                .session
-                .as_ref()
-                .is_some_and(|session| session.terminal().mode().alt_screen)
-    }
-
-    /// Applies an editing action to the editor's text.
-    fn edit(&mut self, action: text_editor::Action) {
-        if action.is_edit() {
-            self.text_changed();
-        }
-        self.editor.perform(action);
-        self.grow_panel();
-    }
-
-    /// Replaces the editor's text, with the cursor at its end. A pending
-    /// confirmation no longer applies; a walk through the history goes on.
-    fn set_editor_text(&mut self, text: &str) {
-        self.gate.edited();
-        self.notice = None;
-        self.editor = Content::with_text(text);
-        self.editor
-            .perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
-        self.grow_panel();
-    }
-
-    /// The editor's text changed: a walk through the history, a pending
-    /// confirmation and a notice no longer apply.
-    fn text_changed(&mut self) {
-        self.history.stop_walking();
-        self.gate.edited();
-        self.notice = None;
-    }
-
-    /// The panel grows with the text; it shrinks only at a new prompt, so
-    /// the grid is not resized while editing or when a command starts.
-    /// Once the editor is empty again, the panel goes back to one line.
-    fn grow_panel(&mut self) {
-        self.panel_lines = if self.editor.is_empty() {
-            1
-        } else {
-            self.panel_lines.max(editor::lines_for(&self.editor))
-        };
-    }
-
-    /// Pastes text into the shell, as on the grid.
-    fn paste_into_shell(&mut self, text: &str) {
-        if let Some(session) = &self.session {
-            let bytes = input::encode_paste(text, session.terminal().mode());
-            self.scroll_to_bottom();
-            self.write(&bytes);
-        }
-    }
-
-    /// Pastes text into the editor, within the editor's limits: laying out
-    /// very long text makes every key slow. Larger text goes to the shell's
-    /// own line as a paste when the editor is empty, and is refused
-    /// otherwise. Control characters are kept here and removed when the
-    /// command is sent.
-    fn paste_into_editor(&mut self, text: String) {
-        if editor::fits(&self.editor, &text) {
-            self.edit(text_editor::Action::Edit(text_editor::Edit::Paste(
-                Arc::new(text),
-            )));
-        } else if self.editor.is_empty() {
-            self.paste_into_shell(&text);
-            self.gate.consume(Consumed::HandedOff);
-        } else {
-            self.notice =
-                Some("Too long to edit here: clear the editor to paste it into the shell");
-        }
-    }
-
-    /// Handles a key pressed in the editor, with the state at this moment.
-    fn editor_press(&mut self, mut press: text_editor::KeyPress) -> Task<Message> {
-        let keys = self.key_context();
-        if !self.editor_active() {
-            // Pressed just after the editor turned off (after Enter, before
-            // the window was redrawn): the key goes to the shell as on the
-            // grid, in order with the ones after it.
-            let grid = keys::KeyContext {
-                editor_active: false,
-                ..keys
+    /// A row of buttons, one per tab, named after each tab's focused pane.
+    fn tab_bar(&self) -> Element<'_, Message> {
+        let palette = &self.palette;
+        let tabs = self.tabs.iter().enumerate().map(|(index, tab)| {
+            let label = tab
+                .grid
+                .get(tab.focus)
+                .and_then(|id| self.panes.get(id)?.title())
+                .unwrap_or(APP_NAME);
+            let (foreground, background) = if index == self.active {
+                (palette.foreground, palette.selection)
+            } else {
+                (
+                    theme::dim(palette.foreground, palette.background),
+                    palette.background,
+                )
             };
-            return match keys::key_press(&press.key, press.modifiers, press.text.as_deref(), grid) {
-                Some(action) => self.handle(Message::Key(action)),
-                None => Task::none(),
-            };
-        }
-        // Keys reach the editor even when a click elsewhere took its focus;
-        // the focus is given back so its cursor shows again.
-        let refocus = !matches!(press.status, text_editor::Status::Focused { .. });
-        press.status = text_editor::Status::Focused { is_hovered: false };
+            // Tabs share the width and never wrap, so any number fits.
+            button(
+                text(tab_label(index, label))
+                    .font(self.metrics.font)
+                    .size(self.metrics.font_size)
+                    .color(foreground)
+                    .wrapping(iced::widget::text::Wrapping::None),
+            )
+            .width(Length::Fill)
+            .clip(true)
+            .on_press(Message::SelectTab(index))
+            .style(move |_theme, _status| button::Style {
+                background: Some(Background::Color(background)),
+                text_color: foreground,
+                ..button::Style::default()
+            })
+            .into()
+        });
+        row(tabs).spacing(2).into()
+    }
 
-        let context = editor::context(&self.editor, keys);
-        let key = keys::editor_key(&press.key, press.modifiers, press.text.as_deref(), context);
-        let task = match key {
-            EditorKey::Edit => match text_editor::Binding::from_key_press(press) {
-                Some(binding) => self.apply_binding(binding),
-                None => Task::none(),
-            },
-            key => self.editor_key(key),
+    fn tab(&self) -> Option<&Tab> {
+        self.tabs.get(self.active)
+    }
+
+    /// The pane with the keyboard focus.
+    fn focused(&self) -> Option<PaneId> {
+        let tab = self.tab()?;
+        tab.grid.get(tab.focus).copied()
+    }
+
+    /// Gives the keyboard to the focused pane's editor, if it is active.
+    fn focus_current(&self) -> Task<Message> {
+        match self.focused() {
+            Some(id) => self.panes[&id].focus().map(move |m| Message::Pane(id, m)),
+            None => Task::none(),
+        }
+    }
+
+    /// Moves the focus to pane `id` of the shown tab.
+    fn focus_pane(&mut self, id: PaneId) -> Task<Message> {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return Task::none();
         };
-        if refocus {
-            Task::batch([task, editor::focus()])
-        } else {
-            task
+        if let Some((&handle, _)) = tab.grid.iter().find(|&(_, &pane)| pane == id) {
+            tab.focus = handle;
         }
+        self.focus_current()
     }
 
-    /// Performs one of the editor's own key bindings.
-    fn apply_binding(&mut self, binding: text_editor::Binding<Message>) -> Task<Message> {
-        use text_editor::{Action, Binding, Edit};
-        match binding {
-            Binding::Copy => return self.copy_editor_selection(),
-            Binding::Cut => {
-                let task = self.copy_editor_selection();
-                if self.editor.selection().is_some() {
-                    self.edit(Action::Edit(Edit::Delete));
-                }
-                return task;
-            }
-            Binding::Paste => return clipboard::read().map(Message::Pasted),
-            Binding::Move(motion) => self.edit(Action::Move(motion)),
-            Binding::Select(motion) => self.edit(Action::Select(motion)),
-            Binding::SelectWord => self.edit(Action::SelectWord),
-            Binding::SelectLine => self.edit(Action::SelectLine),
-            Binding::SelectAll => self.edit(Action::SelectAll),
-            Binding::Insert(ch) => self.edit(Action::Edit(Edit::Insert(ch))),
-            Binding::Enter => self.edit(Action::Edit(Edit::Enter)),
-            Binding::Backspace => self.edit(Action::Edit(Edit::Backspace)),
-            Binding::Delete => self.edit(Action::Edit(Edit::Delete)),
-            Binding::Sequence(bindings) => {
-                return Task::batch(
-                    bindings
-                        .into_iter()
-                        .map(|binding| self.apply_binding(binding))
-                        .collect::<Vec<_>>(),
-                );
-            }
-            // The editor keeps the focus while it is active; Woop produces
-            // no custom bindings.
-            Binding::Unfocus | Binding::Custom(_) => {}
+    fn workspace(&mut self, action: WorkspaceAction) -> Task<Message> {
+        if action != WorkspaceAction::ClosePane {
+            self.pending_close = None;
         }
-        Task::none()
-    }
-
-    fn copy_editor_selection(&self) -> Task<Message> {
-        self.editor
-            .selection()
-            .map_or_else(Task::none, clipboard::write)
-    }
-
-    fn editor_key(&mut self, key: EditorKey) -> Task<Message> {
-        let mode = self
-            .session
-            .as_ref()
-            .map(|session| session.terminal().mode())
-            .unwrap_or_default();
-        match key {
-            EditorKey::Submit => {
-                // Output may have moved the cursor since the editor turned
-                // on; if the shell's line might hold text, the user confirms.
-                if self.gate.submit(self.screen.awaiting_command) == gate::Submit::Confirm {
+        match action {
+            WorkspaceAction::NewTab => self.new_tab(),
+            WorkspaceAction::ClosePane => {
+                let Some(id) = self.focused() else {
+                    return Task::none();
+                };
+                // A running command is only ended after a second request.
+                if self.panes[&id].is_running() && self.pending_close != Some(id) {
+                    self.pending_close = Some(id);
                     return Task::none();
                 }
-                let text = self.editor.text();
-                self.scroll_to_bottom();
-                // If the input cannot be queued, the text stays in the
-                // editor, so nothing typed is lost.
-                if self.write(&input::encode_command(&text, mode)) {
-                    self.history.push(&text);
-                    self.gate.consume(Consumed::Submitted);
-                    self.editor = Content::new();
-                    self.notice = None;
+                self.close_pane(id)
+            }
+            WorkspaceAction::NextTab | WorkspaceAction::PreviousTab => {
+                let count = self.tabs.len();
+                if count > 1 {
+                    self.active = if action == WorkspaceAction::NextTab {
+                        (self.active + 1) % count
+                    } else {
+                        (self.active + count - 1) % count
+                    };
                 }
+                self.focus_current()
             }
-            EditorKey::HandOff(key) => {
-                let text = self.editor.text();
-                // A line break would run part of the command, so multi-line
-                // text is not handed off.
-                if let Some(mut bytes) = input::encode_text_for_line(&text, mode) {
-                    bytes.extend_from_slice(&key);
-                    self.scroll_to_bottom();
-                    if self.write(&bytes) {
-                        self.history.stop_walking();
-                        self.gate.consume(Consumed::HandedOff);
-                        self.editor = Content::new();
-                        self.notice = None;
-                    }
+            WorkspaceAction::SplitRight => self.split(pane_grid::Axis::Vertical),
+            WorkspaceAction::SplitDown => self.split(pane_grid::Axis::Horizontal),
+            WorkspaceAction::Focus(direction) => {
+                let Some(tab) = self.tabs.get_mut(self.active) else {
+                    return Task::none();
+                };
+                let direction = match direction {
+                    Direction::Left => pane_grid::Direction::Left,
+                    Direction::Right => pane_grid::Direction::Right,
+                    Direction::Up => pane_grid::Direction::Up,
+                    Direction::Down => pane_grid::Direction::Down,
+                };
+                if let Some(next) = tab.grid.adjacent(tab.focus, direction) {
+                    tab.focus = next;
                 }
+                self.focus_current()
             }
-            EditorKey::HistoryPrevious => {
-                let current = self.editor.text();
-                if let Some(command) = self.history.previous(&current).map(str::to_owned) {
-                    self.set_editor_text(&command);
-                }
-            }
-            EditorKey::HistoryNext => {
-                if let Some(command) = self.history.next().map(str::to_owned) {
-                    self.set_editor_text(&command);
-                }
-            }
-            EditorKey::Clear => {
-                self.history.stop_walking();
-                self.set_editor_text("");
-            }
-            EditorKey::Shell(bytes) => {
-                self.write(&bytes);
-            }
-            EditorKey::CopyGrid => return self.copy_grid_selection(),
-            EditorKey::Copy => return self.copy_editor_selection(),
-            EditorKey::Paste => return clipboard::read().map(Message::Pasted),
-            EditorKey::Newline => {
-                self.edit(text_editor::Action::Edit(text_editor::Edit::Enter));
-            }
-            EditorKey::Type(ch) => {
-                self.edit(text_editor::Action::Edit(text_editor::Edit::Insert(ch)));
-            }
-            // Edit is resolved by the caller; Ignore does nothing.
-            EditorKey::Edit | EditorKey::Ignore => {}
         }
-        Task::none()
     }
 
-    fn copy_grid_selection(&mut self) -> Task<Message> {
-        // The selection is cleared once copied, so that a second Ctrl+C on
-        // Windows interrupts the shell as usual.
-        if let Some(session) = &mut self.session
-            && let Some(text) = session.terminal().selection_text()
-        {
-            session.terminal_mut().clear_selection();
-            self.refresh();
-            return clipboard::write(text);
-        }
-        Task::none()
-    }
-
-    fn start_session(&mut self, sender: UnboundedSender<()>) {
-        if self.session.is_some() {
-            return;
-        }
+    /// Starts a shell in a new pane, at the size of the focused pane.
+    fn spawn_pane(&mut self) -> Option<PaneId> {
+        let output = self.output.clone()?;
+        let id = self.next_id;
+        self.next_id += 1;
+        let size = self
+            .focused()
+            .and_then(|focused| self.panes.get(&focused))
+            .map_or(INITIAL_SIZE, Pane::size);
         let notify = move || {
-            let _ = sender.unbounded_send(());
+            let _ = output.unbounded_send(id);
         };
-        // Marks count only if they carry this session's token, so output
-        // cannot forge blocks or turn the command editor on and off. The
-        // token is required before any output is pumped (ADR 0018).
-        let token = shell_integration::MarkToken::generate();
-        let command = shell_integration::apply(ShellCommand::default_shell(), &token);
-        match Session::spawn_with_notifier(&command, self.size, notify) {
-            Ok(mut session) => {
-                session.terminal_mut().require_mark_token(&token);
-                self.session = Some(session);
+        match shell_integration::spawn(ShellCommand::default_shell(), size, notify) {
+            Ok(session) => {
+                self.panes
+                    .insert(id, Pane::new(id, session, size, self.metrics));
+                Some(id)
             }
             Err(error) => {
                 eprintln!("woop: failed to start the shell: {error}");
-                std::process::exit(1);
+                None
             }
         }
     }
 
-    fn process_output(&mut self) -> Task<Message> {
-        let Some(session) = &mut self.session else {
+    fn new_tab(&mut self) -> Task<Message> {
+        let Some(id) = self.spawn_pane() else {
+            // Without any pane there is nothing to show.
+            return if self.tabs.is_empty() {
+                iced::exit()
+            } else {
+                Task::none()
+            };
+        };
+        let (grid, focus) = pane_grid::State::new(id);
+        // Pane ids are never reused, so the first pane's id also identifies
+        // the tab.
+        self.tabs.push(Tab { id, grid, focus });
+        self.active = self.tabs.len() - 1;
+        self.focus_current()
+    }
+
+    fn split(&mut self, axis: pane_grid::Axis) -> Task<Message> {
+        let Some(id) = self.spawn_pane() else {
             return Task::none();
         };
-        let events = match session.pump() {
-            Ok(events) => events,
-            Err(error) => {
-                eprintln!("woop: failed to process output: {error}");
-                Vec::new()
-            }
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return Task::none();
         };
-        if session.is_closed() {
-            return iced::exit();
+        if let Some((handle, _)) = tab.grid.split(axis, tab.focus, id) {
+            tab.focus = handle;
         }
-
-        for event in events {
-            match event {
-                TerminalEvent::Title(title) => self.title = Some(title),
-                TerminalEvent::ResetTitle => self.title = None,
-                TerminalEvent::Bell | TerminalEvent::Reply(_) => {}
-            }
-        }
-        self.refresh();
-        Task::none()
+        self.focus_current()
     }
 
-    fn scroll(&mut self, lines: i32) {
-        let Some(session) = &mut self.session else {
-            return;
+    /// Closes pane `id`, ending its session. Its tab closes with its last
+    /// pane, and the window with its last tab.
+    fn close_pane(&mut self, id: PaneId) -> Task<Message> {
+        self.pending_close = None;
+        self.panes.remove(&id);
+        let Some(index) = self
+            .tabs
+            .iter()
+            .position(|tab| tab.grid.iter().any(|(_, &pane)| pane == id))
+        else {
+            return Task::none();
         };
-        if session.terminal().mode().alt_screen {
-            // Full-screen applications have no history; send arrow keys so
-            // they can scroll their own content.
-            let key = if lines > 0 {
-                input::Key::Up
-            } else {
-                input::Key::Down
-            };
-            let mode = session.terminal().mode();
-            if let Some(bytes) = input::encode_key(key, input::Modifiers::default(), mode) {
-                self.write(&bytes.repeat(lines.unsigned_abs() as usize));
+        let tab = &mut self.tabs[index];
+        let handle = tab
+            .grid
+            .iter()
+            .find(|&(_, &pane)| pane == id)
+            .map(|(&handle, _)| handle);
+        match handle.and_then(|handle| tab.grid.close(handle)) {
+            Some((_, sibling)) => {
+                if Some(tab.focus) == handle {
+                    tab.focus = sibling;
+                }
             }
-        } else {
-            session.terminal_mut().scroll(lines);
-            self.refresh();
-        }
-    }
-
-    /// Brings the view back to the most recent output, as typing does.
-    fn scroll_to_bottom(&mut self) {
-        if let Some(session) = &mut self.session
-            && session.terminal().scroll_offset() > 0
-        {
-            session.terminal_mut().scroll_to_bottom();
-            self.refresh();
-        }
-    }
-
-    /// Queues input for the shell. Returns whether it was accepted.
-    fn write(&mut self, bytes: &[u8]) -> bool {
-        let Some(session) = &mut self.session else {
-            return false;
-        };
-        match session.write(bytes) {
-            Ok(()) => true,
-            Err(error) => {
-                eprintln!("woop: failed to send input: {error}");
-                false
+            // The last pane of the tab.
+            None => {
+                self.tabs.remove(index);
+                if self.tabs.is_empty() {
+                    return iced::exit();
+                }
+                if self.active >= index && self.active > 0 {
+                    self.active -= 1;
+                }
             }
         }
+        self.focus_current()
     }
+}
 
-    fn refresh(&mut self) {
-        if let Some(session) = &self.session {
-            self.screen = session.terminal().screen();
-            self.cache.clear();
+/// Whether pane `id` may handle `message` while `focused` has the focus:
+/// keyboard input only reaches the focused pane.
+fn accepts(focused: Option<PaneId>, id: PaneId, message: &pane::Message) -> bool {
+    !message.is_keyboard_input() || focused == Some(id)
+}
+
+/// Most characters of a title shown on a tab.
+const TAB_LABEL_CHARS: usize = 24;
+
+/// A short label for tab `index` (shown from 1) with the given title: the
+/// last part of a path, such as a program or a directory, and at most
+/// [`TAB_LABEL_CHARS`] characters of it.
+fn tab_label(index: usize, title: &str) -> String {
+    let name = title
+        .trim_end_matches(['/', '\\'])
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(title)
+        .trim();
+    let mut label: String = name.chars().take(TAB_LABEL_CHARS).collect();
+    if name.chars().count() > TAB_LABEL_CHARS {
+        label.pop();
+        label.push('…');
+    }
+    format!("{} {label}", index + 1)
+}
+
+/// Asks for a second request before ending a running command.
+fn close_prompt() -> &'static str {
+    match keys::Shortcuts::platform() {
+        keys::Shortcuts::MacOs => "A command is still running: press Cmd+W again to close it",
+        keys::Shortcuts::Windows | keys::Shortcuts::Unix => {
+            "A command is still running: press Ctrl+Shift+W again to close it"
         }
     }
 }
 
-/// Bridges the session's output notifications into the iced event loop.
+/// Bridges the sessions' output notifications into the iced event loop.
 fn output_listener() -> impl Stream<Item = Message> {
     iced::stream::channel(16, async |mut output| {
         let (sender, mut wakeups) = mpsc::unbounded();
         if output.send(Message::ListenerReady(sender)).await.is_err() {
             return;
         }
-        while wakeups.next().await.is_some() {
-            if output.send(Message::Output).await.is_err() {
+        while let Some(id) = wakeups.next().await {
+            if output.send(Message::Output(id)).await.is_err() {
                 break;
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keyboard_input_only_reaches_the_focused_pane() {
+        use keys::KeyAction;
+        let typed = pane::Message::Key(KeyAction::Input(b"rm -rf build\r".to_vec()));
+        assert!(accepts(Some(1), 1, &typed));
+        // Read by pane 1 just before the focus moved to pane 2.
+        assert!(!accepts(Some(2), 1, &typed));
+        assert!(!accepts(None, 1, &typed));
+        assert!(!accepts(
+            Some(2),
+            1,
+            &pane::Message::Pasted(Some("text".into()))
+        ));
+        assert!(!accepts(Some(2), 1, &pane::Message::Key(KeyAction::Paste)));
+        // Clicks and output-driven updates are not keyboard input: a click
+        // focuses its pane first.
+        assert!(accepts(Some(2), 1, &pane::Message::PasteClicked));
+        assert!(accepts(Some(2), 1, &pane::Message::Scroll(3)));
+        assert!(accepts(
+            Some(2),
+            1,
+            &pane::Message::Resized(TerminalSize::new(10, 40))
+        ));
+    }
+
+    #[test]
+    fn tab_labels_are_short() {
+        assert_eq!(
+            tab_label(
+                0,
+                r"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe"
+            ),
+            "1 powershell.exe"
+        );
+        assert_eq!(tab_label(1, "user@host: ~/src/woop/"), "2 woop");
+        assert_eq!(tab_label(2, "vim"), "3 vim");
+        assert_eq!(tab_label(3, "/"), "4 /");
+        assert_eq!(
+            tab_label(4, "a-very-long-program-name-that-goes-on"),
+            "5 a-very-long-program-nam…"
+        );
+    }
 }

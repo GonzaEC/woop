@@ -4,9 +4,10 @@ use iced::widget::text_editor::{self, Binding, Content, KeyPress, Status};
 use iced::widget::{Id, Space, column, container, mouse_area, operation, row, stack, text};
 use iced::{Background, Border, Element, Length, Padding, Task};
 
-use crate::Message;
 use crate::gate::Status as GateStatus;
-use crate::keys::{self, EditorContext, EditorKey, KeyAction, KeyContext};
+use crate::keys::{self, EditorContext, EditorKey, KeyContext};
+use crate::pane::Message;
+use crate::pane::PaneId;
 use crate::theme::{self, Palette};
 use crate::view::Metrics;
 
@@ -16,17 +17,20 @@ const MAX_LINES: usize = 8;
 /// Space around the text inside the panel, in logical pixels.
 const PADDING: f32 = 6.0;
 
-const EDITOR_ID: &str = "woop-command-editor";
-
 /// Shown in front of the editor's text.
 const MARKER: &str = "\u{203a}";
 
 /// What the panel shows.
 pub struct Panel<'a> {
+    /// The pane the editor belongs to.
+    pub id: PaneId,
     /// The editor's text.
     pub content: &'a Content,
     /// Whether the editor takes the keys, and what it shows otherwise.
     pub status: GateStatus,
+    /// The pane has the keyboard focus; the editors of other panes are
+    /// shown but take no keys.
+    pub takes_keys: bool,
     /// Lines of text the panel has room for.
     pub lines: usize,
     /// How keys are interpreted on the grid.
@@ -64,23 +68,30 @@ fn fits_text(current: &str, pasted: &str) -> bool {
         && longest(current) + longest(pasted) <= MAX_LINE_BYTES
 }
 
-/// Gives the keyboard focus to the editor.
-pub fn focus() -> Task<Message> {
-    operation::focus(Id::new(EDITOR_ID))
+/// The widget id of a pane's editor.
+fn editor_id(pane: PaneId) -> Id {
+    Id::from(format!("woop-command-editor-{pane}"))
+}
+
+/// Gives the keyboard focus to a pane's editor.
+pub fn focus(pane: PaneId) -> Task<Message> {
+    operation::focus(editor_id(pane))
 }
 
 /// Builds the panel. While a command runs, the editor is shown disabled.
 pub fn panel(panel: Panel<'_>) -> Element<'_, Message> {
     let Panel {
+        id,
         content,
         status,
+        takes_keys,
         lines,
         keys,
         notice,
         palette,
         metrics,
     } = panel;
-    let active = matches!(status, GateStatus::Active | GateStatus::Confirm);
+    let active = takes_keys && matches!(status, GateStatus::Active | GateStatus::Confirm);
     let context = context(content, keys);
     let height = lines as f32 * metrics.cell_height + 2.0 * PADDING;
     let (foreground, background, selection) =
@@ -94,7 +105,7 @@ pub fn panel(panel: Panel<'_>) -> Element<'_, Message> {
     };
 
     let mut editor = iced::widget::text_editor(content)
-        .id(Id::new(EDITOR_ID))
+        .id(editor_id(id))
         .placeholder(placeholder)
         .font(metrics.font)
         .size(metrics.font_size)
@@ -126,6 +137,8 @@ pub fn panel(panel: Panel<'_>) -> Element<'_, Message> {
     };
     let accent = match status {
         _ if message.is_some() => warning,
+        // Only the focused pane's editor is highlighted.
+        _ if !takes_keys => muted,
         GateStatus::Active | GateStatus::Confirm => palette.cursor,
         GateStatus::ShellLine | GateStatus::Running => muted,
     };
@@ -169,7 +182,7 @@ pub fn panel(panel: Panel<'_>) -> Element<'_, Message> {
     // while it is active, into the shell otherwise.
     mouse_area(column![line, row![marker, layers]].width(Length::Fill))
         .on_press(Message::FocusEditor)
-        .on_right_press(Message::Key(KeyAction::Paste))
+        .on_right_press(Message::PasteClicked)
         .into()
 }
 
@@ -192,7 +205,7 @@ pub fn context(content: &Content, keys: KeyContext) -> EditorContext {
 /// are not taken.
 fn binding(press: KeyPress, context: EditorContext) -> Option<Binding<Message>> {
     let key = keys::editor_key(&press.key, press.modifiers, press.text.as_deref(), context);
-    (key != EditorKey::Ignore).then(|| Binding::Custom(Message::EditorPress(press)))
+    (key != EditorKey::Ignore).then_some(Binding::Custom(Message::EditorPress(press)))
 }
 
 #[cfg(test)]

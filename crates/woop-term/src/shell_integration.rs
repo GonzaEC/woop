@@ -19,6 +19,8 @@ use std::path::{Path, PathBuf};
 
 use woop_pty::ShellCommand;
 
+use crate::{Session, TerminalSize};
+
 const POWERSHELL: &str = include_str!("../shell/woop.ps1");
 const BASH: &str = include_str!("../shell/woop.bash");
 const FISH: &str = include_str!("../shell/woop.fish");
@@ -105,8 +107,24 @@ impl std::fmt::Debug for MarkToken {
     }
 }
 
+/// Starts `command` with Woop's integration, signed with a new token that
+/// the session requires before it is returned (ADR 0018, 0019): marks
+/// without it are ignored from the first byte of output. `notify` is called
+/// as in [`Session::spawn_with_notifier`].
+pub fn spawn(
+    command: ShellCommand,
+    size: TerminalSize,
+    notify: impl Fn() + Send + Sync + 'static,
+) -> woop_pty::Result<Session> {
+    let token = MarkToken::generate();
+    let mut session = Session::spawn_with_notifier(&apply(command, &token), size, notify)?;
+    session.terminal_mut().require_mark_token(&token);
+    Ok(session)
+}
+
 /// Returns `command` changed so that the shell loads Woop's integration,
-/// which signs its marks with `token`.
+/// which signs its marks with `token`. Prefer [`spawn`], which also makes
+/// the session require the token.
 ///
 /// Commands for unknown shells, or for which the integration files cannot
 /// be written, are returned unchanged: the shell then works as in any

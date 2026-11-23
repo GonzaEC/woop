@@ -36,6 +36,7 @@ graph TD
 | `Screen` | `woop-term` | Snapshot of the visible cells, colours and cursor in Woop's own types, ready to draw |
 | `input` | `woop-term` | Encodes key presses and pasted text into the bytes applications expect |
 | `TerminalView` | `woop-app` | iced canvas program that draws a `Screen` and turns window events into messages |
+| `Pane` | `woop-app` | One terminal of the window: a session, its grid, its command editor; tabs lay panes out with iced's pane grid ([ADR 0019](adr/0019-tabs-and-split-panes.md)) |
 
 ## Threading model
 

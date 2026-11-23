@@ -18,6 +18,40 @@ pub enum KeyAction {
     ScrollPages(i32),
     /// Move the view to the previous (negative) or next command block.
     JumpBlock(i32),
+    /// Act on the window's tabs and panes (ADR 0019).
+    Workspace(WorkspaceAction),
+}
+
+/// Shortcuts for the window's tabs and panes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceAction {
+    /// Open a new tab.
+    NewTab,
+    /// Close the focused pane (and its tab, if it is the last one).
+    ClosePane,
+    /// Show the next tab.
+    NextTab,
+    /// Show the previous tab.
+    PreviousTab,
+    /// Split the focused pane, with the new pane on the right.
+    SplitRight,
+    /// Split the focused pane, with the new pane below.
+    SplitDown,
+    /// Move the focus to the neighbouring pane in this direction.
+    Focus(Direction),
+}
+
+/// A direction to move the focus between panes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    /// Towards the left.
+    Left,
+    /// Towards the right.
+    Right,
+    /// Upwards.
+    Up,
+    /// Downwards.
+    Down,
 }
 
 /// Clipboard shortcut conventions.
@@ -70,7 +104,10 @@ pub fn key_press(
     let mode = context.mode;
     if context.editor_active {
         return shortcut(key, modifiers, context).filter(|action| {
-            matches!(action, KeyAction::JumpBlock(_) | KeyAction::ScrollPages(_))
+            matches!(
+                action,
+                KeyAction::JumpBlock(_) | KeyAction::ScrollPages(_) | KeyAction::Workspace(_)
+            )
         });
     }
     if let Some(shortcut) = shortcut(key, modifiers, context) {
@@ -182,7 +219,9 @@ pub fn editor_key(
         Some(KeyAction::Copy) if context.keys.has_selection => return EditorKey::CopyGrid,
         Some(KeyAction::Copy) => return EditorKey::Ignore,
         Some(KeyAction::Paste) => return EditorKey::Paste,
-        Some(KeyAction::JumpBlock(_) | KeyAction::ScrollPages(_)) => return EditorKey::Ignore,
+        Some(KeyAction::JumpBlock(_) | KeyAction::ScrollPages(_) | KeyAction::Workspace(_)) => {
+            return EditorKey::Ignore;
+        }
         Some(KeyAction::Input(_)) | None => {}
     }
 
@@ -286,9 +325,12 @@ fn shortcut(key: &WindowKey, modifiers: WindowModifiers, context: KeyContext) ->
     // Jumping between blocks: Cmd+Up/Down on macOS, Ctrl+Shift+Up/Down
     // elsewhere (Ctrl+Up/Down alone are used by line editors).
     let jump = match context.shortcuts {
-        Shortcuts::MacOs => modifiers.logo() && !modifiers.shift(),
+        Shortcuts::MacOs => modifiers.logo() && !modifiers.shift() && !modifiers.alt(),
         Shortcuts::Windows | Shortcuts::Unix => ctrl_shift,
     };
+    if let Some(action) = workspace_shortcut(key, character, modifiers, context.shortcuts) {
+        return Some(KeyAction::Workspace(action));
+    }
 
     match (key, character) {
         (_, Some('c')) if copy => Some(KeyAction::Copy),
@@ -303,6 +345,76 @@ fn shortcut(key: &WindowKey, modifiers: WindowModifiers, context: KeyContext) ->
             Some(KeyAction::ScrollPages(-1))
         }
         _ => None,
+    }
+}
+
+/// Tab and pane shortcuts (ADR 0019). None of these keys is used by the
+/// shells: Ctrl+Shift with a letter (Cmd on macOS), Ctrl+Tab, and Alt with
+/// an arrow (Cmd+Option on macOS, where Option+arrow moves by words).
+fn workspace_shortcut(
+    key: &WindowKey,
+    character: Option<char>,
+    modifiers: WindowModifiers,
+    shortcuts: Shortcuts,
+) -> Option<WorkspaceAction> {
+    use WorkspaceAction::{ClosePane, Focus, NewTab, NextTab, PreviousTab, SplitDown, SplitRight};
+
+    if let WindowKey::Named(Named::Tab) = key
+        && modifiers.control()
+        && !modifiers.alt()
+        && !modifiers.logo()
+    {
+        return Some(if modifiers.shift() {
+            PreviousTab
+        } else {
+            NextTab
+        });
+    }
+
+    let arrow = match key {
+        WindowKey::Named(Named::ArrowLeft) => Some(Direction::Left),
+        WindowKey::Named(Named::ArrowRight) => Some(Direction::Right),
+        WindowKey::Named(Named::ArrowUp) => Some(Direction::Up),
+        WindowKey::Named(Named::ArrowDown) => Some(Direction::Down),
+        _ => None,
+    };
+    let focus_modifiers = match shortcuts {
+        Shortcuts::MacOs => {
+            modifiers.logo() && modifiers.alt() && !modifiers.control() && !modifiers.shift()
+        }
+        Shortcuts::Windows | Shortcuts::Unix => {
+            modifiers.alt() && !modifiers.control() && !modifiers.shift() && !modifiers.logo()
+        }
+    };
+    if let Some(direction) = arrow.filter(|_| focus_modifiers) {
+        return Some(Focus(direction));
+    }
+
+    match shortcuts {
+        Shortcuts::MacOs => {
+            if !modifiers.logo() || modifiers.control() || modifiers.alt() {
+                return None;
+            }
+            match (character?, modifiers.shift()) {
+                ('t', false) => Some(NewTab),
+                ('w', false) => Some(ClosePane),
+                ('d', false) => Some(SplitRight),
+                ('d', true) => Some(SplitDown),
+                _ => None,
+            }
+        }
+        Shortcuts::Windows | Shortcuts::Unix => {
+            if !(modifiers.control() && modifiers.shift()) || modifiers.alt() || modifiers.logo() {
+                return None;
+            }
+            match character? {
+                't' => Some(NewTab),
+                'w' => Some(ClosePane),
+                'd' => Some(SplitRight),
+                'e' => Some(SplitDown),
+                _ => None,
+            }
+        }
     }
 }
 
@@ -856,5 +968,131 @@ mod tests {
         }
         // Without text, Ctrl+Alt is not a character.
         assert_ne!(EDITOR.key(character("a"), alt_gr), EditorKey::Type('a'));
+    }
+
+    fn workspace(
+        shortcuts: Shortcuts,
+        key: WindowKey,
+        modifiers: WindowModifiers,
+    ) -> Option<KeyAction> {
+        press_with(shortcuts, false, key, modifiers)
+    }
+
+    #[test]
+    fn tab_and_pane_shortcuts_per_platform() {
+        use WorkspaceAction::*;
+        let ctrl_shift = WindowModifiers::CTRL | WindowModifiers::SHIFT;
+        let expect = |action| Some(KeyAction::Workspace(action));
+        for shortcuts in [Shortcuts::Windows, Shortcuts::Unix] {
+            assert_eq!(
+                workspace(shortcuts, character("T"), ctrl_shift),
+                expect(NewTab)
+            );
+            assert_eq!(
+                workspace(shortcuts, character("W"), ctrl_shift),
+                expect(ClosePane)
+            );
+            assert_eq!(
+                workspace(shortcuts, character("D"), ctrl_shift),
+                expect(SplitRight)
+            );
+            assert_eq!(
+                workspace(shortcuts, character("E"), ctrl_shift),
+                expect(SplitDown)
+            );
+            assert_eq!(
+                workspace(shortcuts, named(Named::ArrowLeft), WindowModifiers::ALT),
+                expect(Focus(Direction::Left))
+            );
+        }
+        let cmd = WindowModifiers::LOGO;
+        let mac = Shortcuts::MacOs;
+        assert_eq!(workspace(mac, character("t"), cmd), expect(NewTab));
+        assert_eq!(workspace(mac, character("w"), cmd), expect(ClosePane));
+        assert_eq!(workspace(mac, character("d"), cmd), expect(SplitRight));
+        assert_eq!(
+            workspace(mac, character("D"), cmd | WindowModifiers::SHIFT),
+            expect(SplitDown)
+        );
+        assert_eq!(
+            workspace(mac, named(Named::ArrowUp), cmd | WindowModifiers::ALT),
+            expect(Focus(Direction::Up))
+        );
+        // Cmd+Up still jumps between blocks.
+        assert_eq!(
+            workspace(mac, named(Named::ArrowUp), cmd),
+            Some(KeyAction::JumpBlock(-1))
+        );
+        for shortcuts in [Shortcuts::Windows, Shortcuts::Unix, Shortcuts::MacOs] {
+            assert_eq!(
+                workspace(shortcuts, named(Named::Tab), WindowModifiers::CTRL),
+                expect(NextTab)
+            );
+            assert_eq!(
+                workspace(
+                    shortcuts,
+                    named(Named::Tab),
+                    WindowModifiers::CTRL | WindowModifiers::SHIFT
+                ),
+                expect(PreviousTab)
+            );
+        }
+    }
+
+    #[test]
+    fn the_shell_keeps_its_keys() {
+        // Ctrl+T, Ctrl+W, Ctrl+D and plain Tab are shell keys.
+        let ctrl = WindowModifiers::CTRL;
+        assert_eq!(
+            workspace(Shortcuts::Unix, character("t"), ctrl),
+            input(&[0x14])
+        );
+        assert_eq!(
+            workspace(Shortcuts::Unix, character("w"), ctrl),
+            input(&[0x17])
+        );
+        assert_eq!(
+            workspace(Shortcuts::Unix, character("d"), ctrl),
+            input(&[0x04])
+        );
+        assert_eq!(
+            workspace(
+                Shortcuts::Windows,
+                named(Named::Tab),
+                WindowModifiers::empty()
+            ),
+            input(b"\t")
+        );
+        // Option+arrow moves by words on macOS: it is not a pane shortcut.
+        assert_ne!(
+            workspace(
+                Shortcuts::MacOs,
+                named(Named::ArrowLeft),
+                WindowModifiers::ALT
+            ),
+            Some(KeyAction::Workspace(WorkspaceAction::Focus(
+                Direction::Left
+            )))
+        );
+    }
+
+    #[test]
+    fn workspace_shortcuts_work_while_the_editor_is_active() {
+        let ctrl_shift = WindowModifiers::CTRL | WindowModifiers::SHIFT;
+        assert_eq!(EDITOR.key(character("T"), ctrl_shift), EditorKey::Ignore);
+        assert_eq!(
+            EDITOR.key(named(Named::Tab), WindowModifiers::CTRL),
+            EditorKey::Ignore
+        );
+        let context = KeyContext {
+            mode: TerminalMode::default(),
+            has_selection: false,
+            shortcuts: Shortcuts::Windows,
+            editor_active: true,
+        };
+        assert_eq!(
+            key_press(&character("T"), ctrl_shift, None, context),
+            Some(KeyAction::Workspace(WorkspaceAction::NewTab))
+        );
     }
 }

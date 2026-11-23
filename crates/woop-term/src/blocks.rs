@@ -1445,6 +1445,32 @@ mod tests {
     }
 
     #[test]
+    fn a_running_command_is_remembered_when_blocks_are_forgotten() {
+        let mut term = terminal(5, 20, &format!("{A}$ {B}ssh host\r\n{C}"));
+        assert!(term.command_running());
+
+        // Output clears the history (`clear` on a remote host does), which
+        // forgets every block, but the command is still running.
+        term.advance(b"\x1b[3J\x1b[H\x1b[2J");
+        assert!(term.blocks().is_empty());
+        assert!(term.command_running());
+
+        // So does output long enough to push the command out of history.
+        let many_lines = "line\r\n".repeat(crate::terminal::HISTORY_LINES + 2_000);
+        term.advance(many_lines.as_bytes());
+        assert!(term.command_running());
+
+        // Only the shell's own marks end it.
+        term.advance(format!("{}{A}$ {B}", d(0)).as_bytes());
+        assert!(!term.command_running());
+    }
+
+    #[test]
+    fn no_command_runs_without_integration() {
+        assert!(!terminal(5, 20, "$ make\r\nbuilding\r\n").command_running());
+    }
+
+    #[test]
     fn awaits_no_command_on_the_alternate_screen() {
         let mut term = terminal(5, 20, &format!("{A}$ {B}"));
         term.advance(b"\x1b[?1049h");
