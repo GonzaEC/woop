@@ -65,7 +65,7 @@ To see the terminal core in action without a window:
 cargo run -p woop-term --example headless -- "echo hello"
 ```
 
-Read [docs/architecture.md](docs/architecture.md) for an overview of how the pieces fit together.
+Read [docs/architecture.md](docs/architecture.md) for an overview of how the pieces fit together. Settings are described in [docs/configuration.md](docs/configuration.md).
 
 ## Contributing
 

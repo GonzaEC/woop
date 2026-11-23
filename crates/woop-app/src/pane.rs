@@ -127,6 +127,14 @@ impl Pane {
         self.title.as_deref().filter(|title| !title.is_empty())
     }
 
+    /// Draws the pane again with a new font, after the configuration
+    /// changed; the grid is measured again on its next layout. Colours are
+    /// read when drawing, so this also applies new colours.
+    pub fn restyle(&mut self, metrics: Metrics) {
+        self.metrics = metrics;
+        self.cache.clear();
+    }
+
     /// The size of the grid.
     pub fn size(&self) -> TerminalSize {
         self.size

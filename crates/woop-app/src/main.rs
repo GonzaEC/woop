@@ -23,8 +23,8 @@ use keys::{Direction, KeyAction, WorkspaceAction};
 use pane::{Pane, PaneId};
 use theme::Palette;
 use view::Metrics;
+use woop_config::Config;
 
-const FONT_SIZE: f32 = 14.0;
 const INITIAL_SIZE: TerminalSize = TerminalSize {
     rows: 30,
     cols: 100,
@@ -55,7 +55,15 @@ pub enum Message {
     PaneResized(pane_grid::ResizeEvent),
     /// A tab was clicked.
     SelectTab(usize),
+    /// The configuration file changed on disk.
+    ConfigChanged,
 }
+
+/// Most different font family names kept during one run (ADR 0020).
+const MAX_FONT_NAMES: usize = 32;
+
+/// How often the configuration file is checked for changes (ADR 0020).
+const CONFIG_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The layout of one tab's panes, and which one has the focus.
 struct Tab {
@@ -82,11 +90,18 @@ struct Woop {
     /// A pane whose command is still running was asked to close; asking
     /// again closes it.
     pending_close: Option<PaneId>,
+    /// The settings in use (ADR 0020).
+    config: Config,
+    /// Why the configuration file could not be used, shown until fixed.
+    config_error: Option<String>,
+    /// Font family names given to iced, which keeps them for the whole
+    /// program; each distinct name is kept once.
+    font_names: Vec<&'static str>,
 }
 
 impl Woop {
     fn new() -> Self {
-        Self {
+        let mut woop = Self {
             output: None,
             panes: HashMap::new(),
             tabs: Vec::new(),
@@ -94,9 +109,65 @@ impl Woop {
             next_id: 0,
             history: History::default(),
             palette: Palette::default(),
-            metrics: Metrics::measure(view::default_font(), FONT_SIZE),
+            metrics: Metrics::measure(view::default_font(), woop_config::DEFAULT_FONT_SIZE),
             pending_close: None,
+            config: Config::default(),
+            config_error: None,
+            font_names: Vec::new(),
+        };
+        woop.reload_config();
+        woop
+    }
+
+    /// Reads the configuration file again. A file that cannot be used
+    /// leaves the current settings in place and is reported; a missing file
+    /// means the defaults.
+    fn reload_config(&mut self) {
+        let Some(path) = woop_config::path() else {
+            return;
+        };
+        match woop_config::load(&path) {
+            Ok(config) => {
+                self.config_error = None;
+                self.apply_config(config.unwrap_or_default());
+            }
+            Err(error) => self.config_error = Some(error.to_string()),
         }
+    }
+
+    /// Applies settings: colours and the font at once to every pane, the
+    /// shell to panes opened from now on.
+    fn apply_config(&mut self, config: Config) {
+        if config == self.config {
+            return;
+        }
+        self.palette = Palette::from(&config.colors);
+        let font = config
+            .font
+            .family
+            .as_deref()
+            .and_then(|family| self.font_name(family))
+            .map_or_else(view::default_font, iced::Font::with_name);
+        self.metrics = Metrics::measure(font, config.font.size);
+        for pane in self.panes.values_mut() {
+            pane.restyle(self.metrics);
+        }
+        self.config = config;
+    }
+
+    /// The `'static` name iced needs for a font family, kept once per
+    /// distinct name. After [`MAX_FONT_NAMES`] different names, new ones
+    /// are not kept and the default font is used, so memory stays bounded.
+    fn font_name(&mut self, family: &str) -> Option<&'static str> {
+        if let Some(&name) = self.font_names.iter().find(|&&name| name == family) {
+            return Some(name);
+        }
+        if self.font_names.len() >= MAX_FONT_NAMES {
+            return None;
+        }
+        let name: &'static str = Box::leak(family.to_owned().into_boxed_str());
+        self.font_names.push(name);
+        Some(name)
     }
 
     fn title(&self) -> String {
@@ -169,6 +240,7 @@ impl Woop {
                     return self.focus_current();
                 }
             }
+            Message::ConfigChanged => self.reload_config(),
         }
         Task::none()
     }
@@ -212,10 +284,16 @@ impl Woop {
         if self.tabs.len() > 1 {
             layout = layout.push(self.tab_bar());
         }
-        if self.pending_close.is_some() {
+        let notices = [
+            self.pending_close.map(|_| close_prompt().to_owned()),
+            self.config_error.as_ref().map(|error| {
+                format!("Configuration not applied, the previous settings stay: {error}")
+            }),
+        ];
+        for notice in notices.into_iter().flatten() {
             layout = layout.push(
                 container(
-                    text(close_prompt())
+                    text(notice)
                         .font(self.metrics.font)
                         .size(self.metrics.font_size)
                         .color(palette.failure),
@@ -236,7 +314,10 @@ impl Woop {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::run(output_listener)
+        Subscription::batch([
+            Subscription::run(output_listener),
+            Subscription::run(config_listener),
+        ])
     }
 
     /// A row of buttons, one per tab, named after each tab's focused pane.
@@ -366,7 +447,16 @@ impl Woop {
         let notify = move || {
             let _ = output.unbounded_send(id);
         };
-        match shell_integration::spawn(ShellCommand::default_shell(), size, notify) {
+        let command = match &self.config.shell {
+            Some(shell) => shell
+                .args
+                .iter()
+                .fold(ShellCommand::new(&shell.program), |command, arg| {
+                    command.arg(arg)
+                }),
+            None => ShellCommand::default_shell(),
+        };
+        match shell_integration::spawn(command, size, notify) {
             Ok(session) => {
                 self.panes
                     .insert(id, Pane::new(id, session, size, self.metrics));
@@ -484,6 +574,25 @@ fn close_prompt() -> &'static str {
             "A command is still running: press Ctrl+Shift+W again to close it"
         }
     }
+}
+
+/// Reports changes to the configuration file, checked every
+/// [`CONFIG_CHECK_INTERVAL`] by a background thread.
+fn config_listener() -> impl Stream<Item = Message> {
+    iced::stream::channel(1, async |mut output| {
+        let Some(path) = woop_config::path() else {
+            return;
+        };
+        let (sender, mut changes) = mpsc::unbounded();
+        woop_config::watch(path, CONFIG_CHECK_INTERVAL, move || {
+            let _ = sender.unbounded_send(());
+        });
+        while changes.next().await.is_some() {
+            if output.send(Message::ConfigChanged).await.is_err() {
+                break;
+            }
+        }
+    })
 }
 
 /// Bridges the sessions' output notifications into the iced event loop.

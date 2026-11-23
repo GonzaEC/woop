@@ -149,8 +149,10 @@ impl ShellCommand {
         }
     }
 
-    fn to_builder(&self) -> CommandBuilder {
-        let mut builder = CommandBuilder::new(&self.program);
+    /// The command for the pseudo-terminal, with the program resolved to an
+    /// absolute path ([`resolve_program`]).
+    fn to_builder(&self) -> std::result::Result<CommandBuilder, String> {
+        let mut builder = CommandBuilder::new(resolve_program(&self.program)?);
         builder.args(&self.args);
         match &self.cwd {
             Some(cwd) => builder.cwd(cwd),
@@ -165,16 +167,83 @@ impl ShellCommand {
         for (key, value) in &self.env {
             builder.env(key, value);
         }
-        builder
+        Ok(builder)
     }
 }
 
 #[cfg(windows)]
 fn find_in_path(program: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(program))
-        .find(|candidate| candidate.is_file())
+    resolve_program_in(std::ffi::OsStr::new(program), std::env::var_os("PATH")).ok()
+}
+
+/// Resolves the program to run to an absolute path, so the operating system
+/// never looks for it elsewhere. On Windows, a bare name that is not found
+/// is otherwise looked up in the current directory of the parent process,
+/// which may be a folder anyone could fill (a cloned repository, a download
+/// folder) and would run a planted program.
+fn resolve_program(program: &std::ffi::OsStr) -> std::result::Result<PathBuf, String> {
+    resolve_program_in(program, std::env::var_os("PATH"))
+}
+
+/// [`resolve_program`] with the search path given:
+/// - an absolute path is kept;
+/// - another path (with a separator, such as `bin/sh` or `..\x.exe`) is
+///   refused;
+/// - a bare name is searched in the absolute directories of `search_path`
+///   only (on Windows also with the extensions of `PATHEXT`), never in the
+///   current directory.
+fn resolve_program_in(
+    program: &std::ffi::OsStr,
+    search_path: Option<OsString>,
+) -> std::result::Result<PathBuf, String> {
+    let path = std::path::Path::new(program);
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    let text = program.to_string_lossy();
+    let separators: &[char] = if cfg!(windows) { &['/', '\\'] } else { &['/'] };
+    if text.is_empty() || text.contains(separators) || path.components().count() != 1 {
+        return Err("must be an absolute path or a program name found in PATH".into());
+    }
+    let candidates = |dir: PathBuf| -> Vec<PathBuf> {
+        let mut names = vec![dir.join(program)];
+        #[cfg(windows)]
+        if path.extension().is_none() {
+            let extensions =
+                std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+            names.extend(
+                extensions
+                    .split(';')
+                    .filter(|extension| !extension.is_empty())
+                    .map(|extension| dir.join(format!("{text}{extension}"))),
+            );
+        }
+        names
+    };
+    search_path
+        .iter()
+        .flat_map(std::env::split_paths)
+        // Empty and relative entries would mean the current directory.
+        .filter(|dir| dir.is_absolute())
+        .flat_map(candidates)
+        .find(|candidate| is_program(candidate))
+        .ok_or_else(|| format!("`{text}` was not found in PATH"))
+}
+
+/// Whether `path` is a file that can be run.
+fn is_program(path: &std::path::Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        metadata.is_file()
+    }
 }
 
 /// Exit status of a process that ran inside a pseudo-terminal.
@@ -205,17 +274,19 @@ pub struct Pty {
 impl Pty {
     /// Opens a pseudo-terminal of the given size and starts `command` in it.
     pub fn spawn(command: &ShellCommand, size: PtySize) -> Result<Self> {
+        let spawn_error = |message: String| PtyError::Spawn {
+            program: command.program.to_string_lossy().into_owned(),
+            message,
+        };
+        let builder = command.to_builder().map_err(spawn_error)?;
         let pair = native_pty_system()
             .openpty(size.into())
             .map_err(|err| PtyError::Open(err.to_string()))?;
 
         let child = pair
             .slave
-            .spawn_command(command.to_builder())
-            .map_err(|err| PtyError::Spawn {
-                program: command.program.to_string_lossy().into_owned(),
-                message: err.to_string(),
-            })?;
+            .spawn_command(builder)
+            .map_err(|err| spawn_error(err.to_string()))?;
         // The child holds its own handle to the slave side. Releasing ours
         // lets the reader observe end-of-file once the child exits.
         drop(pair.slave);
@@ -340,5 +411,78 @@ mod tests {
     fn exit_status_success() {
         assert!(ExitStatus { code: 0 }.success());
         assert!(!ExitStatus { code: 1 }.success());
+    }
+
+    /// A directory holding a runnable file called `name`.
+    fn dir_with_program(label: &str, name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("woop-pty-{label}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let file = dir.join(name);
+        std::fs::write(&file, "").expect("write program");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        dir
+    }
+
+    fn resolve(
+        program: &str,
+        search_path: Option<&std::path::Path>,
+    ) -> std::result::Result<PathBuf, String> {
+        resolve_program_in(
+            std::ffi::OsStr::new(program),
+            search_path.map(|dir| dir.as_os_str().to_owned()),
+        )
+    }
+
+    #[test]
+    fn bare_names_are_found_in_the_search_path_only() {
+        let dir = dir_with_program("found", "woop-test-shell.exe");
+        assert_eq!(
+            resolve("woop-test-shell.exe", Some(&dir)),
+            Ok(dir.join("woop-test-shell.exe"))
+        );
+        // A name that is not in the search path is never run from anywhere
+        // else, such as the current directory, where a program of the same
+        // name could have been planted.
+        assert!(resolve("woop-test-shell.exe", None).is_err());
+        let current = std::env::current_dir().expect("current dir");
+        let relative = PathBuf::from(".");
+        assert!(resolve("woop-test-shell.exe", Some(&relative)).is_err());
+        assert!(resolve("woop-test-shell.exe", Some(&current.join("missing"))).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_names_without_extension_use_pathext() {
+        let dir = dir_with_program("pathext", "woop-test-ext.exe");
+        assert_eq!(
+            resolve("woop-test-ext", Some(&dir))
+                .map(|path| path.file_name().map(|name| name.to_ascii_lowercase())),
+            Ok(Some("woop-test-ext.exe".into()))
+        );
+    }
+
+    #[test]
+    fn relative_paths_are_refused_and_absolute_ones_kept() {
+        let dir = dir_with_program("paths", "woop-test-abs");
+        assert!(resolve("../woop-test-abs", Some(&dir)).is_err());
+        assert!(resolve("bin/woop-test-abs", Some(&dir)).is_err());
+        assert!(resolve("", Some(&dir)).is_err());
+        let absolute = dir.join("woop-test-abs");
+        assert_eq!(
+            resolve(&absolute.to_string_lossy(), None),
+            Ok(absolute.clone())
+        );
+    }
+
+    #[test]
+    fn spawning_an_unknown_program_fails_without_running_anything() {
+        let command = ShellCommand::new("woop-no-such-program-anywhere");
+        let error = Pty::spawn(&command, PtySize::new(24, 80)).expect_err("spawn must fail");
+        assert!(error.to_string().contains("not found in PATH"), "{error}");
     }
 }

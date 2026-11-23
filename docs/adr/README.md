@@ -38,3 +38,4 @@ Start from [the template](template.md) and add the record to the index below in 
 | [0017](0017-command-editor-key-handling.md) | Decide the command editor's keys when they are handled, and bound what it holds | Accepted |
 | [0018](0018-per-session-mark-token.md) | Trust only shell integration marks carrying a per-session token | Accepted |
 | [0019](0019-tabs-and-split-panes.md) | Organise sessions in tabs of split panes | Accepted |
+| [0020](0020-toml-configuration.md) | Configure Woop with a TOML file that reloads while it runs | Accepted |
