@@ -27,15 +27,35 @@ if [ -z "$__woop_integrated" ]; then
     }
 
     # Percent-encodes $1, byte by byte, so that a directory cannot end or
-    # change the mark it is sent in.
+    # change the mark it is sent in. Called only in a command substitution,
+    # so the locale set here stays in that subshell.
     __woop_encode() {
-        local LC_ALL=C text=$1 encoded= char i
+        # Read bytes, not characters. bash 3.2 (macOS) may keep reading
+        # characters even so (it ignored `local LC_ALL=C`), which the probe
+        # tells: each character's UTF-8 bytes are then encoded here.
+        LC_ALL=C
+        local text=$1 encoded= char code byte i probe=$'\xc3\xb1' bytes
+        local by_character=
+        [ "${#probe}" -eq 1 ] && by_character=1
         for (( i = 0; i < ${#text}; i++ )); do
             char=${text:i:1}
             case $char in
-                [a-zA-Z0-9.~_/-]) encoded+=$char ;;
-                *) printf -v char '%%%02X' "'$char"; encoded+=$char ;;
+                [a-zA-Z0-9.~_/-]) encoded+=$char; continue ;;
             esac
+            printf -v code '%d' "'$char"
+            if [ -z "$by_character" ] || (( code < 0x80 )); then
+                bytes=$(( code & 0xFF ))
+            elif (( code < 0x800 )); then
+                bytes="$(( 0xC0 | code >> 6 )) $(( 0x80 | (code & 0x3F) ))"
+            elif (( code < 0x10000 )); then
+                bytes="$(( 0xE0 | code >> 12 )) $(( 0x80 | (code >> 6 & 0x3F) )) $(( 0x80 | (code & 0x3F) ))"
+            else
+                bytes="$(( 0xF0 | code >> 18 )) $(( 0x80 | (code >> 12 & 0x3F) )) $(( 0x80 | (code >> 6 & 0x3F) )) $(( 0x80 | (code & 0x3F) ))"
+            fi
+            for byte in $bytes; do
+                printf -v char '%%%02X' "$byte"
+                encoded+=$char
+            done
         done
         printf '%s' "$encoded"
     }
