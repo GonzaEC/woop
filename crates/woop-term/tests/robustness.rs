@@ -10,7 +10,7 @@
 use proptest::prelude::*;
 use woop_term::{
     BlockRows, BlockState, SelectionKind, SelectionPoint, Terminal, TerminalMode, TerminalSize,
-    input,
+    input, shell_integration::MarkToken,
 };
 
 /// Pieces of output that exercise the parser and the mark scanner, including
@@ -277,6 +277,32 @@ proptest! {
         term.advance(b"recovered");
 
         prop_assert!(term.screen_text().contains("recovered"), "{:?}", term.screen_text());
+    }
+
+    /// With a session token required, output that does not know it can
+    /// never create a block or a prompt for the command editor, whatever
+    /// marks and token guesses it contains (ADR 0018).
+    #[test]
+    fn output_cannot_forge_signed_marks(
+        pieces in prop::collection::vec(
+            prop_oneof![
+                token(),
+                Just(b"\x1b]133;A;woop=00000000000000000000000000000000\x07".to_vec()),
+                Just(b"\x1b]133;B;woop=\x07".to_vec()),
+                Just(b"\x1b]133;D;0;woop=0\x1b\\".to_vec()),
+                Just(b"$ ".to_vec()),
+            ],
+            0..60,
+        )
+    ) {
+        let mut term = Terminal::new(TerminalSize::new(6, 30));
+        term.require_mark_token(&MarkToken::generate());
+        for piece in &pieces {
+            term.advance(piece);
+        }
+        prop_assert!(term.blocks().is_empty());
+        prop_assert_eq!(term.screen().command_prompt, None);
+        prop_assert_eq!(term.awaiting_command(), None);
     }
 }
 
