@@ -2,8 +2,12 @@
 
 use iced::keyboard::key::Named;
 use iced::keyboard::{Key as WindowKey, Modifiers as WindowModifiers};
+use woop_config::Action;
 use woop_term::TerminalMode;
 use woop_term::input::{self, Key, Modifiers};
+
+use crate::bindings::Bindings;
+use std::sync::Arc;
 
 /// What a key press means for the terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +24,38 @@ pub enum KeyAction {
     JumpBlock(i32),
     /// Act on the window's tabs and panes (ADR 0019).
     Workspace(WorkspaceAction),
+    /// Run one of the command palette's commands, given a shortcut in the
+    /// configuration (ADR 0021).
+    Command(Action),
+}
+
+/// What a bound action means for the keyboard.
+fn key_action(action: Action) -> KeyAction {
+    use WorkspaceAction as W;
+    let workspace = |action| KeyAction::Workspace(action);
+    match action {
+        Action::NewTab => workspace(W::NewTab),
+        Action::ClosePane => workspace(W::ClosePane),
+        Action::NextTab => workspace(W::NextTab),
+        Action::PreviousTab => workspace(W::PreviousTab),
+        Action::SplitRight => workspace(W::SplitRight),
+        Action::SplitDown => workspace(W::SplitDown),
+        Action::FocusLeft => workspace(W::Focus(Direction::Left)),
+        Action::FocusRight => workspace(W::Focus(Direction::Right)),
+        Action::FocusUp => workspace(W::Focus(Direction::Up)),
+        Action::FocusDown => workspace(W::Focus(Direction::Down)),
+        Action::CommandPalette => workspace(W::CommandPalette),
+        Action::PreviousBlock => KeyAction::JumpBlock(-1),
+        Action::NextBlock => KeyAction::JumpBlock(1),
+        Action::CopySelection => KeyAction::Copy,
+        Action::Paste => KeyAction::Paste,
+        Action::CopyLastCommandLine
+        | Action::CopyLastOutput
+        | Action::ToggleLastOutput
+        | Action::ScrollToBottom
+        | Action::CopyConfigPath
+        | Action::ReloadConfig => KeyAction::Command(action),
+    }
 }
 
 /// Shortcuts for the window's tabs and panes.
@@ -82,14 +118,17 @@ impl Shortcuts {
 }
 
 /// Context needed to interpret a key press.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct KeyContext {
     /// Input modes of the running application.
     pub mode: TerminalMode,
     /// Some text is selected.
     pub has_selection: bool,
-    /// Clipboard shortcut conventions.
+    /// Clipboard shortcut conventions, which are fixed.
     pub shortcuts: Shortcuts,
+    /// The other shortcuts, from the platform's defaults and the
+    /// configuration.
+    pub bindings: Arc<Bindings>,
     /// Woop's command editor takes the keys; only Woop's own view shortcuts
     /// (jumping between blocks, scrolling pages) are left to the grid.
     pub editor_active: bool,
@@ -101,14 +140,17 @@ pub fn key_press(
     key: &WindowKey,
     modifiers: WindowModifiers,
     text: Option<&str>,
-    context: KeyContext,
+    context: &KeyContext,
 ) -> Option<KeyAction> {
     let mode = context.mode;
     if context.editor_active {
         return shortcut(key, modifiers, context).filter(|action| {
             matches!(
                 action,
-                KeyAction::JumpBlock(_) | KeyAction::ScrollPages(_) | KeyAction::Workspace(_)
+                KeyAction::JumpBlock(_)
+                    | KeyAction::ScrollPages(_)
+                    | KeyAction::Workspace(_)
+                    | KeyAction::Command(_)
             )
         });
     }
@@ -180,7 +222,7 @@ pub enum EditorKey {
 }
 
 /// State of the command editor needed to interpret a key press.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct EditorContext {
     /// The grid's context: modes, shortcuts, and whether the grid has a
     /// selection.
@@ -214,14 +256,19 @@ pub fn editor_key(
     let keys = KeyContext {
         has_selection: context.has_selection || context.keys.has_selection,
         editor_active: false,
-        ..context.keys
+        ..context.keys.clone()
     };
-    match shortcut(key, modifiers, keys) {
+    match shortcut(key, modifiers, &keys) {
         Some(KeyAction::Copy) if context.has_selection => return EditorKey::Copy,
         Some(KeyAction::Copy) if context.keys.has_selection => return EditorKey::CopyGrid,
         Some(KeyAction::Copy) => return EditorKey::Ignore,
         Some(KeyAction::Paste) => return EditorKey::Paste,
-        Some(KeyAction::JumpBlock(_) | KeyAction::ScrollPages(_) | KeyAction::Workspace(_)) => {
+        Some(
+            KeyAction::JumpBlock(_)
+            | KeyAction::ScrollPages(_)
+            | KeyAction::Workspace(_)
+            | KeyAction::Command(_),
+        ) => {
             return EditorKey::Ignore;
         }
         Some(KeyAction::Input(_)) | None => {}
@@ -308,7 +355,14 @@ fn hand_off_if_empty(bytes: Option<Vec<u8>>, context: EditorContext) -> EditorKe
     }
 }
 
-fn shortcut(key: &WindowKey, modifiers: WindowModifiers, context: KeyContext) -> Option<KeyAction> {
+/// Woop's own shortcuts. Copy and paste follow the platform and are fixed
+/// (Windows copies with Ctrl+C only while text is selected), as are
+/// Shift+Page Up/Down; the others come from the bindings (ADR 0021).
+fn shortcut(
+    key: &WindowKey,
+    modifiers: WindowModifiers,
+    context: &KeyContext,
+) -> Option<KeyAction> {
     let character = match key {
         WindowKey::Character(chars) => chars.chars().next().map(|ch| ch.to_ascii_lowercase()),
         _ => None,
@@ -324,103 +378,18 @@ fn shortcut(key: &WindowKey, modifiers: WindowModifiers, context: KeyContext) ->
         Shortcuts::Unix => (ctrl_shift, ctrl_shift),
         Shortcuts::MacOs => (modifiers.logo(), modifiers.logo()),
     };
-    // Jumping between blocks: Cmd+Up/Down on macOS, Ctrl+Shift+Up/Down
-    // elsewhere (Ctrl+Up/Down alone are used by line editors).
-    let jump = match context.shortcuts {
-        Shortcuts::MacOs => modifiers.logo() && !modifiers.shift() && !modifiers.alt(),
-        Shortcuts::Windows | Shortcuts::Unix => ctrl_shift,
-    };
-    if let Some(action) = workspace_shortcut(key, character, modifiers, context.shortcuts) {
-        return Some(KeyAction::Workspace(action));
-    }
 
     match (key, character) {
         (_, Some('c')) if copy => Some(KeyAction::Copy),
         (_, Some('v')) if paste => Some(KeyAction::Paste),
         (WindowKey::Named(Named::Insert), _) if modifiers.shift() => Some(KeyAction::Paste),
-        (WindowKey::Named(Named::ArrowUp), _) if jump => Some(KeyAction::JumpBlock(-1)),
-        (WindowKey::Named(Named::ArrowDown), _) if jump => Some(KeyAction::JumpBlock(1)),
         (WindowKey::Named(Named::PageUp), _) if modifiers.shift() => {
             Some(KeyAction::ScrollPages(1))
         }
         (WindowKey::Named(Named::PageDown), _) if modifiers.shift() => {
             Some(KeyAction::ScrollPages(-1))
         }
-        _ => None,
-    }
-}
-
-/// Tab and pane shortcuts (ADR 0019). None of these keys is used by the
-/// shells: Ctrl+Shift with a letter (Cmd on macOS), Ctrl+Tab, and Alt with
-/// an arrow (Cmd+Option on macOS, where Option+arrow moves by words).
-fn workspace_shortcut(
-    key: &WindowKey,
-    character: Option<char>,
-    modifiers: WindowModifiers,
-    shortcuts: Shortcuts,
-) -> Option<WorkspaceAction> {
-    use WorkspaceAction::{
-        ClosePane, CommandPalette, Focus, NewTab, NextTab, PreviousTab, SplitDown, SplitRight,
-    };
-
-    if let WindowKey::Named(Named::Tab) = key
-        && modifiers.control()
-        && !modifiers.alt()
-        && !modifiers.logo()
-    {
-        return Some(if modifiers.shift() {
-            PreviousTab
-        } else {
-            NextTab
-        });
-    }
-
-    let arrow = match key {
-        WindowKey::Named(Named::ArrowLeft) => Some(Direction::Left),
-        WindowKey::Named(Named::ArrowRight) => Some(Direction::Right),
-        WindowKey::Named(Named::ArrowUp) => Some(Direction::Up),
-        WindowKey::Named(Named::ArrowDown) => Some(Direction::Down),
-        _ => None,
-    };
-    let focus_modifiers = match shortcuts {
-        Shortcuts::MacOs => {
-            modifiers.logo() && modifiers.alt() && !modifiers.control() && !modifiers.shift()
-        }
-        Shortcuts::Windows | Shortcuts::Unix => {
-            modifiers.alt() && !modifiers.control() && !modifiers.shift() && !modifiers.logo()
-        }
-    };
-    if let Some(direction) = arrow.filter(|_| focus_modifiers) {
-        return Some(Focus(direction));
-    }
-
-    match shortcuts {
-        Shortcuts::MacOs => {
-            if !modifiers.logo() || modifiers.control() || modifiers.alt() {
-                return None;
-            }
-            match (character?, modifiers.shift()) {
-                ('t', false) => Some(NewTab),
-                ('w', false) => Some(ClosePane),
-                ('d', false) => Some(SplitRight),
-                ('d', true) => Some(SplitDown),
-                ('p', true) => Some(CommandPalette),
-                _ => None,
-            }
-        }
-        Shortcuts::Windows | Shortcuts::Unix => {
-            if !(modifiers.control() && modifiers.shift()) || modifiers.alt() || modifiers.logo() {
-                return None;
-            }
-            match character? {
-                't' => Some(NewTab),
-                'w' => Some(ClosePane),
-                'd' => Some(SplitRight),
-                'e' => Some(SplitDown),
-                'p' => Some(CommandPalette),
-                _ => None,
-            }
-        }
+        _ => context.bindings.action(key, modifiers).map(key_action),
     }
 }
 
@@ -466,9 +435,10 @@ mod tests {
             mode: TerminalMode::default(),
             has_selection: false,
             shortcuts: Shortcuts::Unix,
+            bindings: Arc::new(Bindings::new(Shortcuts::Unix, &[])),
             editor_active: false,
         };
-        key_press(&key, modifiers, text, context)
+        key_press(&key, modifiers, text, &context)
     }
 
     fn press_with(
@@ -481,9 +451,10 @@ mod tests {
             mode: TerminalMode::default(),
             has_selection,
             shortcuts,
+            bindings: Arc::new(Bindings::new(shortcuts, &[])),
             editor_active: false,
         };
-        key_press(&key, modifiers, None, context)
+        key_press(&key, modifiers, None, &context)
     }
 
     fn character(ch: &str) -> WindowKey {
@@ -655,9 +626,10 @@ mod tests {
             mode: TerminalMode::default(),
             has_selection: true,
             shortcuts: Shortcuts::Windows,
+            bindings: Arc::new(Bindings::new(Shortcuts::Windows, &[])),
             editor_active: true,
         };
-        let grid = |key: WindowKey, modifiers| key_press(&key, modifiers, Some("a"), context);
+        let grid = |key: WindowKey, modifiers| key_press(&key, modifiers, Some("a"), &context);
         let ctrl_shift = WindowModifiers::CTRL | WindowModifiers::SHIFT;
         assert_eq!(grid(character("a"), WindowModifiers::empty()), None);
         assert_eq!(grid(character("c"), WindowModifiers::CTRL), None);
@@ -716,6 +688,7 @@ mod tests {
                     },
                     has_selection: self.grid_selection,
                     shortcuts: self.shortcuts,
+                    bindings: Arc::new(Bindings::new(self.shortcuts, &[])),
                     editor_active: true,
                 },
                 has_selection: self.has_selection,
@@ -1094,10 +1067,11 @@ mod tests {
             mode: TerminalMode::default(),
             has_selection: false,
             shortcuts: Shortcuts::Windows,
+            bindings: Arc::new(Bindings::new(Shortcuts::Windows, &[])),
             editor_active: true,
         };
         assert_eq!(
-            key_press(&character("T"), ctrl_shift, None, context),
+            key_press(&character("T"), ctrl_shift, None, &context),
             Some(KeyAction::Workspace(WorkspaceAction::NewTab))
         );
     }

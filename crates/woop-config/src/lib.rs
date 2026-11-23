@@ -5,6 +5,7 @@
 //! colours and the shell command. [`watch`] reports changes to the file so
 //! they apply without restarting.
 
+mod keys;
 mod theme;
 
 use std::path::{Path, PathBuf};
@@ -12,6 +13,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 
+pub use keys::{Action, ChordKey, KeyChord, NamedKey};
 pub use theme::{Colors, Rgb, THEMES};
 
 /// Largest configuration file read, in bytes.
@@ -41,6 +43,9 @@ pub struct Config {
     pub shell: Option<Shell>,
     /// The colours, from a theme and the user's overrides.
     pub colors: Colors,
+    /// Shortcuts the user changed: an action's new shortcut, or `None` to
+    /// remove it. Other actions keep their default shortcuts.
+    pub keys: Vec<(Action, Option<KeyChord>)>,
 }
 
 impl Default for Config {
@@ -49,6 +54,7 @@ impl Default for Config {
             font: Font::default(),
             shell: None,
             colors: Colors::dark(),
+            keys: Vec::new(),
         }
     }
 }
@@ -233,6 +239,10 @@ pub fn parse(text: &str) -> Result<Config, ConfigError> {
     if let Some(colors) = raw.colors {
         config.colors = colors.resolve()?;
     }
+
+    if let Some(keys) = raw.keys {
+        config.keys = keys::parse_bindings(keys)?;
+    }
     Ok(config)
 }
 
@@ -328,6 +338,7 @@ struct RawConfig {
     font: Option<RawFont>,
     shell: Option<RawShell>,
     colors: Option<theme::RawColors>,
+    keys: Option<std::collections::BTreeMap<String, String>>,
 }
 
 #[derive(Deserialize)]
@@ -399,6 +410,45 @@ mod tests {
         );
         assert_eq!(config.colors.background, Rgb(0x10, 0x10, 0x10));
         assert_eq!(config.colors.foreground, Colors::light().foreground);
+    }
+
+    #[test]
+    fn reads_shortcuts() {
+        let config = parse(
+            r#"
+            [keys]
+            focus-left = "Ctrl+Alt+Left"
+            split-down = "none"
+            copy-last-command = "Ctrl+Shift+Y"
+            "#,
+        )
+        .expect("valid");
+        assert_eq!(
+            config.keys,
+            [
+                (
+                    Action::CopyLastCommandLine,
+                    Some(KeyChord::ctrl(ChordKey::Char('y')).shift())
+                ),
+                (
+                    Action::FocusLeft,
+                    Some(KeyChord::ctrl(ChordKey::Named(NamedKey::Left)).with_alt())
+                ),
+                (Action::SplitDown, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_actions_and_bad_shortcuts() {
+        let error = |text: &str| parse(text).expect_err(text).to_string();
+        assert!(error("[keys]\nnew-tabs = \"Ctrl+T\"").contains("new-tabs"));
+        assert!(error("[keys]\nnew-tab = \"T\"").contains("needs Ctrl"));
+        assert!(error("[keys]\nnew-tab = 5").contains("new-tab"));
+        assert!(
+            error("[keys]\nnew-tab = \"Ctrl+Shift+Y\"\npaste = \"ctrl+shift+y\"")
+                .contains("same shortcut")
+        );
     }
 
     #[test]

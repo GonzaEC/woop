@@ -37,6 +37,24 @@ ansi = [
 
 Unknown settings are reported as mistakes, so a misspelt name does not go unnoticed.
 
+## Shortcuts
+
+The `[keys]` table gives an action a new shortcut, or removes it with `"none"`. The command palette (Ctrl+Shift+P, Cmd+Shift+P on macOS) shows each action's shortcut in effect.
+
+```toml
+[keys]
+focus-left = "Ctrl+Alt+Left"         # instead of Alt+Left
+focus-right = "Ctrl+Alt+Right"
+copy-last-command = "Ctrl+Shift+Y"   # a command that has no shortcut by default
+split-down = "none"                  # no shortcut
+```
+
+Actions: `new-tab`, `close-pane`, `next-tab`, `previous-tab`, `split-right`, `split-down`, `focus-left`, `focus-right`, `focus-up`, `focus-down`, `command-palette`, `copy-last-command`, `copy-last-output`, `toggle-last-output`, `previous-block`, `next-block`, `copy-selection`, `paste`, `scroll-to-bottom`, `copy-config-path`, `reload-config`.
+
+A shortcut is written as modifiers and a key joined by `+`: modifiers `Ctrl`, `Alt` (or `Option`), `Shift`, `Cmd` (or `Super`, `Win`); keys a character, `F1` to `F12`, or `Up`, `Down`, `Left`, `Right`, `Tab`, `Enter`, `Space`, `Escape`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`. A shortcut must include Ctrl, Alt or Cmd, so that it cannot take a key used for typing, and Ctrl+Alt with a character is refused because it types characters on many keyboards (AltGr). Giving an action a shortcut that another action had moves it to the new action; giving two actions the same shortcut in `[keys]` is a mistake. The platform's copy and paste keys always work; `copy-selection` and `paste` add more.
+
+Some shortcuts take keys from the shell: Ctrl+C interrupts a command, Ctrl+D ends input, Ctrl+Z suspends, Ctrl+R searches the history. Woop allows them, but the shell no longer receives them. On macOS, Option with a character types characters (å, @), so such shortcuts are ignored there. A shortcut with a symbol that needs Shift on your keyboard is written with the symbol Shift produces (`Ctrl+Shift+!`, not `Ctrl+Shift+1`).
+
 On macOS and Linux, Woop ignores the file if other users could change it or the directory it is in, since it chooses the program Woop starts (`chmod 600` on the file fixes it). The shell program must be an absolute path or a name found in `PATH`.
 
 The decisions behind this are in [ADR 0020](adr/0020-toml-configuration.md).

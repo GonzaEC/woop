@@ -127,7 +127,7 @@ pub fn panel(panel: Panel<'_>) -> Element<'_, Message> {
     if active {
         editor = editor
             .on_action(Message::EditorAction)
-            .key_binding(move |press| binding(press, context));
+            .key_binding(move |press| binding(press, context.clone()));
     }
     let message = match (status, notice) {
         (GateStatus::Confirm, _) => {

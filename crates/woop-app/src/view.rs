@@ -155,7 +155,7 @@ impl canvas::Program<Message> for TerminalView<'_> {
                 modifiers,
                 text,
                 ..
-            }) => keys::key_press(key, *modifiers, text.as_deref(), self.keys)
+            }) => keys::key_press(key, *modifiers, text.as_deref(), &self.keys)
                 .map(|action| Action::publish(Message::Key(action)).and_capture()),
             // A right click pastes the clipboard, through the same path as
             // the paste shortcut (control characters are removed).
@@ -621,6 +621,7 @@ mod tests {
                 mode: woop_term::TerminalMode::default(),
                 has_selection: false,
                 shortcuts: keys::Shortcuts::platform(),
+                bindings: std::sync::Arc::default(),
                 editor_active: false,
             },
             takes_keys: true,
