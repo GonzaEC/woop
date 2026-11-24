@@ -4,6 +4,7 @@ use iced::widget::text_editor::{self, Binding, Content, KeyPress, Status};
 use iced::widget::{Id, Space, column, container, mouse_area, operation, row, stack, text};
 use iced::{Background, Border, Element, Length, Padding, Task};
 
+use crate::completion::{Kind, List};
 use crate::gate::Status as GateStatus;
 use crate::keys::{self, EditorContext, EditorKey, KeyContext};
 use crate::pane::Message;
@@ -41,6 +42,81 @@ pub struct Panel<'a> {
     pub palette: &'a Palette,
     /// Font and cell size of the grid, shared by the editor.
     pub metrics: Metrics,
+    /// The completion list is open, so its keys go to it.
+    pub completing: bool,
+}
+
+/// Most entries of the completion list shown at once.
+const LIST_ROWS: usize = 8;
+
+/// Builds the completion list, drawn over the bottom of the grid (ADR
+/// 0023). Clicking an entry inserts it.
+pub fn completion_list<'a>(
+    list: &'a List,
+    palette: &'a Palette,
+    metrics: Metrics,
+) -> Element<'a, Message> {
+    let first = list.first_shown(LIST_ROWS);
+    let (foreground, background) = (palette.foreground, palette.background);
+    let muted = theme::dim(foreground, background);
+    let selection = palette.selection;
+    let rows = list
+        .candidates
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(LIST_ROWS)
+        .map(|(index, candidate)| {
+            let kind = match candidate.kind {
+                Kind::Directory => "dir ",
+                Kind::File => "file",
+                Kind::History => "hist",
+            };
+            let chosen = index == list.selected;
+            let line = row![
+                text(kind)
+                    .font(metrics.font)
+                    .size(metrics.font_size)
+                    .color(muted),
+                text(candidate.label.as_str())
+                    .font(metrics.font)
+                    .size(metrics.font_size)
+                    .color(foreground)
+                    .wrapping(text::Wrapping::None),
+            ]
+            .spacing(metrics.font_size);
+            let entry = container(line)
+                .padding(Padding::from([1.0, PADDING]))
+                .width(Length::Fill)
+                .style(move |_theme| container::Style {
+                    background: Some(Background::Color(if chosen {
+                        selection
+                    } else {
+                        background
+                    })),
+                    ..container::Style::default()
+                });
+            mouse_area(entry)
+                .on_press(Message::CompletionClicked(index))
+                .into()
+        });
+    let count = text(format!("{}/{}", list.selected + 1, list.candidates.len()))
+        .font(metrics.font)
+        .size(metrics.font_size)
+        .color(muted);
+    let entries = column(rows).push(container(count).padding(Padding::from([1.0, PADDING])));
+    container(entries)
+        .width(Length::Fill)
+        .style(move |_theme| container::Style {
+            background: Some(Background::Color(background)),
+            border: Border {
+                color: muted,
+                width: 1.0,
+                radius: 0.0.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
 }
 
 /// Most text the editor holds, in bytes. Laying out text costs time on
@@ -60,6 +136,11 @@ pub fn lines_for(content: &Content) -> usize {
 /// Whether pasting `text` keeps the editor within its limits.
 pub fn fits(content: &Content, text: &str) -> bool {
     fits_text(&content.text(), text)
+}
+
+/// Whether the editor can hold `text` on its own.
+pub fn holds(text: &str) -> bool {
+    fits_text("", text)
 }
 
 fn fits_text(current: &str, pasted: &str) -> bool {
@@ -90,9 +171,10 @@ pub fn panel(panel: Panel<'_>) -> Element<'_, Message> {
         notice,
         palette,
         metrics,
+        completing,
     } = panel;
     let active = takes_keys && matches!(status, GateStatus::Active | GateStatus::Confirm);
-    let context = context(content, keys);
+    let context = context(content, keys, completing);
     let height = lines as f32 * metrics.cell_height + 2.0 * PADDING;
     let (foreground, background, selection) =
         (palette.foreground, palette.background, palette.selection);
@@ -187,7 +269,7 @@ pub fn panel(panel: Panel<'_>) -> Element<'_, Message> {
 }
 
 /// The editor's state needed to interpret a key press.
-pub fn context(content: &Content, keys: KeyContext) -> EditorContext {
+pub fn context(content: &Content, keys: KeyContext, completing: bool) -> EditorContext {
     let cursor = content.cursor();
     EditorContext {
         keys,
@@ -195,6 +277,7 @@ pub fn context(content: &Content, keys: KeyContext) -> EditorContext {
         is_empty: content.is_empty(),
         on_first_line: cursor.position.line == 0,
         on_last_line: cursor.position.line + 1 >= content.line_count(),
+        completing,
     }
 }
 

@@ -50,6 +50,9 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
   - "Copy last command's output" clears the selection it makes, contradicting its comment; "Copy selection" from the palette ignores a selection in the command editor.
   - Without shell integration, palette commands that need it give no feedback (the notice is drawn on the hidden editor panel).
   - Dead code: the palette's own entry in `run_command` and the `Char(' ')` key in `bindings.rs` can never be reached.
+- [ ] **Hardening from the completions review** (low findings):
+  - Unix: also require the shell's history file to belong to the user, refuse symbolic links and directories others can write, and open it without blocking (a pipe swapped in between the check and the open blocks the reading thread).
+  - Listings stop after 10,000 entries before matching, so a match further on in a very large directory is not offered; filter while reading instead.
 
 ## Milestones
 
@@ -75,6 +78,10 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
   - [x] Configurable shortcuts: the `[keys]` table gives any palette action a shortcut or removes it, with the platform's copy and paste keys fixed ([ADR 0021](adr/0021-configurable-keybindings.md)).
   - [x] New tabs and panes start in the focused pane's directory, which the shell reports in its signed prompt marks ([ADR 0022](adr/0022-working-directory-from-signed-marks.md)).
   - [x] Milestone audit: security, performance and general reviews, long robustness runs. Fixed: the shell integration, and its token, load only with shell arguments known not to keep the scripts from running (a login bash, for example, left the token exported to every program); bash reads the integration before its own options; on Unix a configuration directory others can write is refused before the file is opened, so a planted pipe cannot block the window; "Close pane" from the palette can be confirmed, and the notice names the shortcut in effect; palette commands for a pane do nothing once that pane has closed; a configured shell that cannot start falls back to the default shell with a notice, instead of closing the window; a prompt without a usable directory forgets the previous one; bash and zsh encode the directory only when it changes, without a subshell (a prompt took 13 ms in Git Bash, now under 1 ms); panes in hidden tabs no longer take a snapshot of their screen on every output. Low findings are listed in the quality track.
-- [ ] **6. Completions and assistant.** History and path completions, command specifications, optional AI providers (own API key or local model).
+- [ ] **6. Completions and assistant.**
+  - [x] History and path completions: Tab in the command editor completes paths from the shell's directory and commands from the history (Woop's own and the shell's history file, read only), in a list over the grid; with nothing to offer it hands off to the shell as before ([ADR 0023](adr/0023-history-and-path-completions.md)).
+  - [ ] Command specifications: subcommands and options of common commands.
+  - [ ] Optional AI providers (own API key or local model).
+  - [ ] Milestone audit: security, performance and general reviews, long robustness runs.
 - [ ] **7. Interface design.** One design pass over the whole interface once its features are in place: how the command editor relates to the prompt and the blocks (today it sits far from the prompt on a mostly empty screen, its marker is small and faint, and the panel does not read as part of the current block), blocks, tabs, panels and the default theme.
 - [ ] **8. Distribution.** Signed installers and packages for each platform, published from CI.

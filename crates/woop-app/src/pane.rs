@@ -4,19 +4,26 @@
 use std::sync::Arc;
 
 use iced::widget::text_editor::{self, Content};
-use iced::widget::{canvas, column};
+use iced::widget::{canvas, column, container, stack};
 use iced::{Element, Length, Task, clipboard};
 use woop_term::{
     Screen, SelectionKind, SelectionPoint, Session, Terminal, TerminalEvent, TerminalSize, input,
 };
 
+use woop_term::shell_integration::Shell;
+
 use crate::bindings::Bindings;
+use crate::completion;
 use crate::editor;
 use crate::gate::{self, Consumed, Gate};
 use crate::history::History;
 use crate::keys::{self, EditorKey, KeyAction};
 use crate::theme::Palette;
 use crate::view::{Metrics, TerminalView};
+
+/// After this long, a listing opens the completion list instead of
+/// inserting its only match (ADR 0023).
+const LATE_LISTING: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Identifies a pane for as long as the window runs.
 pub type PaneId = u64;
@@ -54,6 +61,10 @@ pub enum Message {
     PasteClicked,
     /// A command chosen in the command palette.
     Command(PaneCommand),
+    /// A directory listing for completion request `0` arrived (ADR 0023).
+    Listed(u64, Arc<[completion::Entry]>),
+    /// An entry of the completion list was clicked.
+    CompletionClicked(usize),
 }
 
 /// Commands from the command palette that act on one pane.
@@ -81,6 +92,7 @@ impl Message {
                 | Self::CopyBlockCommand(_)
                 | Self::FocusEditor
                 | Self::PasteClicked
+                | Self::CompletionClicked(_)
         )
     }
 
@@ -122,6 +134,31 @@ pub struct Pane {
     /// Output arrived while the pane was not shown: `screen` is out of date
     /// until it is shown again.
     stale: bool,
+    /// The shell the pane runs, if Woop has an integration for it: it
+    /// decides quoting and which history file applies.
+    shell: Option<Shell>,
+    /// The completion list, while it is open (ADR 0023).
+    completion: Option<completion::List>,
+    /// A completion waiting for a directory listing.
+    pending: Option<Pending>,
+    /// Identifies completion requests, so that late listings are dropped.
+    requests: u64,
+    /// A directory listing is running. Only one runs at a time, so a hung
+    /// file system blocks one thread, not one per Tab.
+    listing: bool,
+}
+
+/// A completion waiting for its directory listing.
+struct Pending {
+    id: u64,
+    /// The editor's text and cursor when Tab was pressed; the listing is
+    /// dropped if they changed meanwhile.
+    text: String,
+    cursor: text_editor::Position,
+    path: completion::PathRequest,
+    history: Vec<completion::Candidate>,
+    /// When Tab was pressed.
+    asked: std::time::Instant,
 }
 
 impl Pane {
@@ -132,6 +169,7 @@ impl Pane {
         size: TerminalSize,
         metrics: Metrics,
         bindings: Arc<Bindings>,
+        shell: Option<Shell>,
     ) -> Self {
         Self {
             id,
@@ -148,6 +186,11 @@ impl Pane {
             notice: None,
             bindings,
             stale: false,
+            shell,
+            completion: None,
+            pending: None,
+            requests: 0,
+            listing: false,
         }
     }
 
@@ -345,6 +388,9 @@ impl Pane {
                 }
             }
             Message::EditorAction(action) => {
+                // A click or an input method moves away from what the list
+                // completes.
+                self.close_completion();
                 if self.editor_active() {
                     self.edit(action, history);
                 } else if let text_editor::Action::Edit(text_editor::Edit::Paste(text)) = action {
@@ -357,6 +403,13 @@ impl Pane {
             Message::FocusEditor => return self.focus(),
             Message::PasteClicked => return clipboard::read().map(Message::Pasted),
             Message::Command(command) => return self.run(command),
+            Message::Listed(id, entries) => return self.listed(id, &entries, history),
+            Message::CompletionClicked(index) => {
+                if let Some(list) = &mut self.completion {
+                    list.selected = index.min(list.candidates.len().saturating_sub(1));
+                }
+                return self.accept_completion(history);
+            }
         }
         Task::none()
     }
@@ -400,8 +453,18 @@ impl Pane {
             notice: self.notice,
             palette,
             metrics: self.metrics,
+            completing: self.completion.is_some(),
         });
-        column![grid, panel].into()
+        match &self.completion {
+            // Drawn over the bottom of the grid, so the grid keeps its size.
+            Some(list) if focused => {
+                let list = container(editor::completion_list(list, palette, self.metrics))
+                    .height(Length::Fill)
+                    .align_bottom(Length::Fill);
+                column![stack![grid, list], panel].into()
+            }
+            _ => column![grid, panel].into(),
+        }
     }
 
     /// The editor takes the keys ([`Gate`]).
@@ -507,8 +570,15 @@ impl Pane {
         let refocus = !matches!(press.status, text_editor::Status::Focused { .. });
         press.status = text_editor::Status::Focused { is_hovered: false };
 
-        let context = editor::context(&self.editor, keys);
+        let context = editor::context(&self.editor, keys, self.completion.is_some());
         let key = keys::editor_key(&press.key, press.modifiers, press.text.as_deref(), context);
+        if !matches!(
+            key,
+            EditorKey::CompletionMove(_) | EditorKey::CompletionAccept | EditorKey::CompletionClose
+        ) {
+            // Any other key closes the list and acts as usual.
+            self.close_completion();
+        }
         let task = match key {
             EditorKey::Edit => match text_editor::Binding::from_key_press(press) {
                 Some(binding) => self.apply_binding(binding, history),
@@ -609,15 +679,23 @@ impl Pane {
             }
             EditorKey::HistoryPrevious => {
                 let current = self.editor.text();
-                if let Some(command) = history.previous(&current).map(str::to_owned) {
+                if let Some(command) = history.previous(&current, self.shell).map(str::to_owned) {
                     self.set_editor_text(&command);
                 }
             }
             EditorKey::HistoryNext => {
-                if let Some(command) = history.next().map(str::to_owned) {
+                if let Some(command) = history.next(self.shell).map(str::to_owned) {
                     self.set_editor_text(&command);
                 }
             }
+            EditorKey::Complete => return self.complete(history),
+            EditorKey::CompletionMove(step) => {
+                if let Some(list) = &mut self.completion {
+                    list.select(step);
+                }
+            }
+            EditorKey::CompletionAccept => return self.accept_completion(history),
+            EditorKey::CompletionClose => self.close_completion(),
             EditorKey::Clear => {
                 history.stop_walking();
                 self.set_editor_text("");
@@ -641,6 +719,205 @@ impl Pane {
             EditorKey::Edit | EditorKey::Ignore => {}
         }
         Task::none()
+    }
+
+    /// Closes the completion list and forgets a completion waiting for its
+    /// listing.
+    fn close_completion(&mut self) {
+        self.completion = None;
+        self.pending = None;
+    }
+
+    /// Completes the word or command at the cursor (ADR 0023): paths from
+    /// a listing read off the interface thread, and commands from the
+    /// history.
+    fn complete(&mut self, history: &mut History) -> Task<Message> {
+        self.close_completion();
+        let Some(shell) = self.shell else {
+            return self.hand_off_tab(history);
+        };
+        let text = self.editor.text();
+        let cursor = self.editor.cursor();
+        let position = cursor.position;
+        let line = self
+            .editor
+            .line(position.line)
+            .map(|line| line.text.into_owned())
+            .unwrap_or_default();
+        let at_end = position.line + 1 >= self.editor.line_count() && position.column >= line.len();
+        let commands = if at_end && cursor.selection.is_none() && !text.trim().is_empty() {
+            completion::history_candidates(&text, history.newest_first(Some(shell)))
+        } else {
+            Vec::new()
+        };
+        let path = completion::PathRequest {
+            line: position.line,
+            word: completion::word_before(&line, position.column, shell),
+            cursor: position.column,
+            shell,
+            ignore_case: cfg!(windows) || cfg!(target_os = "macos"),
+            separator: if shell == Shell::PowerShell && cfg!(windows) {
+                '\\'
+            } else {
+                '/'
+            },
+        };
+        let directory = (cursor.selection.is_none() && completes_paths(&line, &path))
+            .then(|| {
+                let (dir, _) = completion::split_path(&path.word.value, shell);
+                let cwd = self
+                    .session
+                    .terminal()
+                    .current_directory()
+                    .map(std::path::PathBuf::from);
+                completion::directory_to_list(
+                    dir,
+                    path.word.tilde,
+                    cwd.as_deref(),
+                    home_directory().as_deref(),
+                    shell,
+                )
+            })
+            .flatten();
+        let Some(directory) = directory else {
+            return self.offer(Vec::new(), commands, &path, false, history);
+        };
+        if self.listing {
+            // The last listing has not returned (a slow or hung file
+            // system): the shell's own completion is tried instead.
+            return self.hand_off_tab(history);
+        }
+        self.listing = true;
+        self.requests += 1;
+        let id = self.requests;
+        self.pending = Some(Pending {
+            id,
+            text,
+            cursor: position,
+            path,
+            history: commands,
+            asked: std::time::Instant::now(),
+        });
+        Task::perform(list_off_thread(directory), move |entries| {
+            Message::Listed(id, entries)
+        })
+    }
+
+    /// A listing arrived: offers its completions if the editor still holds
+    /// what it held when Tab was pressed.
+    fn listed(
+        &mut self,
+        id: u64,
+        entries: &[completion::Entry],
+        history: &mut History,
+    ) -> Task<Message> {
+        // Only one listing runs at a time, so this is the one.
+        self.listing = false;
+        let current = self.pending.as_ref().is_some_and(|pending| {
+            pending.id == id
+                && self.editor_active()
+                && self.editor.cursor().position == pending.cursor
+                && self.editor.cursor().selection.is_none()
+                && self.editor.text() == pending.text
+        });
+        let Some(pending) = self.pending.take().filter(|_| current) else {
+            return Task::none();
+        };
+        let paths = completion::path_candidates(&pending.path, entries);
+        // The user may have moved on, about to press Enter: a late result
+        // opens the list instead of changing the line.
+        let late = pending.asked.elapsed() > LATE_LISTING;
+        self.offer(paths, pending.history, &pending.path, late, history)
+    }
+
+    /// Inserts the only completion, or opens the list; with none, hands
+    /// the text to the shell's own completion as before.
+    fn offer(
+        &mut self,
+        paths: Vec<completion::Candidate>,
+        commands: Vec<completion::Candidate>,
+        path: &completion::PathRequest,
+        late: bool,
+        history: &mut History,
+    ) -> Task<Message> {
+        let common =
+            completion::common_beginning(path, &paths).filter(|_| commands.is_empty() && !late);
+        let mut candidates = paths;
+        candidates.extend(commands);
+        match candidates.len() {
+            0 => return self.hand_off_tab(history),
+            1 if !late => {
+                let candidate = candidates.remove(0);
+                self.apply(&candidate, history);
+            }
+            _ => {
+                if let Some(common) = common {
+                    // The word now ends after the shared beginning.
+                    self.apply(&common, history);
+                    let end = self.editor.cursor().position.column;
+                    for candidate in &mut candidates {
+                        if let completion::Span::Word { end: old, .. } = &mut candidate.span {
+                            *old = end;
+                        }
+                    }
+                }
+                self.completion = Some(completion::List {
+                    candidates,
+                    selected: 0,
+                });
+            }
+        }
+        Task::none()
+    }
+
+    /// Inserts the chosen completion and closes the list.
+    fn accept_completion(&mut self, history: &mut History) -> Task<Message> {
+        let chosen = self
+            .completion
+            .take()
+            .and_then(|list| list.chosen().cloned());
+        if let Some(candidate) = chosen {
+            self.apply(&candidate, history);
+        }
+        Task::none()
+    }
+
+    /// Replaces the part of the editor's text a completion is for.
+    fn apply(&mut self, candidate: &completion::Candidate, history: &mut History) {
+        use text_editor::{Action, Cursor, Edit, Position};
+        match candidate.span {
+            completion::Span::All => {
+                history.stop_walking();
+                self.set_editor_text(&candidate.text);
+            }
+            completion::Span::Word { line, start, end } => {
+                let replaced = end.saturating_sub(start);
+                if !editor::fits(&self.editor, &candidate.text) && candidate.text.len() > replaced {
+                    self.notice = Some("Too long to insert into the editor");
+                    return;
+                }
+                self.editor.move_to(Cursor {
+                    position: Position { line, column: end },
+                    selection: (start != end).then_some(Position {
+                        line,
+                        column: start,
+                    }),
+                });
+                self.edit(
+                    Action::Edit(Edit::Paste(Arc::new(candidate.text.clone()))),
+                    history,
+                );
+            }
+        }
+    }
+
+    /// Hands the editor's text and a Tab to the shell's own completion.
+    fn hand_off_tab(&mut self, history: &mut History) -> Task<Message> {
+        let mode = self.session.terminal().mode();
+        match input::encode_key(input::Key::Tab, input::Modifiers::default(), mode) {
+            Some(bytes) => self.editor_key(EditorKey::HandOff(bytes), history),
+            None => Task::none(),
+        }
     }
 
     /// Runs a command from the command palette.
@@ -732,5 +1009,72 @@ impl Pane {
         self.stale = false;
         self.screen = Terminal::screen(self.session.terminal());
         self.cache.clear();
+    }
+}
+
+/// Whether the word before the cursor is completed as a path. A first word
+/// without a separator names a command, which the shell completes better.
+fn completes_paths(line: &str, path: &completion::PathRequest) -> bool {
+    let value = &path.word.value;
+    let before = line.get(..path.word.start).unwrap_or_default().trim_end();
+    let command_position = before.is_empty() || before.ends_with([';', '|', '&', '(']);
+    !command_position
+        || path.word.tilde
+        || value.starts_with('.')
+        || value.contains(|ch| ch == '/' || (ch == '\\' && path.shell == Shell::PowerShell))
+}
+
+/// The user's home directory, for `~`.
+fn home_directory() -> Option<std::path::PathBuf> {
+    let variable = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(variable)
+        .map(std::path::PathBuf::from)
+        .filter(|home| home.is_absolute())
+}
+
+/// Lists `directory` on a thread of its own, so that a slow or hung file
+/// system never blocks the window (ADR 0023).
+async fn list_off_thread(directory: std::path::PathBuf) -> Arc<[completion::Entry]> {
+    let (sender, receiver) = iced::futures::channel::oneshot::channel();
+    let started = std::thread::Builder::new()
+        .name("woop-completion".to_owned())
+        .spawn(move || {
+            let _ = sender.send(completion::list_directory(&directory));
+        });
+    if started.is_err() {
+        return Arc::from([]);
+    }
+    receiver.await.map_or_else(|_| Arc::from([]), Arc::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(line: &str, shell: Shell) -> completion::PathRequest {
+        completion::PathRequest {
+            line: 0,
+            word: completion::word_before(line, line.len(), shell),
+            cursor: line.len(),
+            shell,
+            ignore_case: false,
+            separator: '/',
+        }
+    }
+
+    #[test]
+    fn commands_are_left_to_the_shell_and_arguments_are_paths() {
+        let paths = |line: &str, shell| completes_paths(line, &request(line, shell));
+        assert!(!paths("gi", Shell::Bash));
+        assert!(!paths("", Shell::Bash));
+        assert!(!paths("ls; gi", Shell::Bash));
+        assert!(!paths("ls | gr", Shell::Zsh));
+        assert!(paths("ls sr", Shell::Bash));
+        assert!(paths("ls ", Shell::Bash));
+        assert!(paths("./scr", Shell::Bash));
+        assert!(paths("~/bin/x", Shell::Fish));
+        assert!(paths("bin/x", Shell::Bash));
+        assert!(paths(r"bin\x", Shell::PowerShell));
+        assert!(!paths(r"bin\x", Shell::Bash));
     }
 }
