@@ -41,6 +41,15 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
   - Unix: also require the configuration file and every directory above it to belong to the user (or root), refuse writable ancestors without the sticky bit, and treat a failure to check a directory as a refusal.
   - Windows: check the owner or access rights of the configuration file instead of assuming `%APPDATA%` is private (it can live on a network share).
   - Stop the configuration watcher thread when nothing listens any more.
+- [ ] **Hardening from the milestone 5 audit** (low findings):
+  - The window's tab, focus, close-request and palette-target bookkeeping is tested only through small pure functions; move it into a type that can be tested without starting sessions.
+  - Each pane keeps up to 10,000 lines of history (about 60 MB at 200 columns when full), so several panes multiply it with no overall limit; consider a window-wide budget, a smaller history for hidden tabs, or a setting.
+  - Several flooding panes each take a full pump budget before a key is handled (about 12 ms per round with 4 panes at 100x300); give the focused pane priority or share one budget per frame.
+  - The emulator formats every byte of an OSC 133 mark for a debug message it never prints, which caps mark-heavy output at about 30 MB/s; consider not feeding complete marks to it, checked against its parser.
+  - The configured shell is looked up in `PATH` on the interface thread for every new pane (up to 26 ms for a bare name not found); resolve it once per configuration load.
+  - "Copy last command's output" clears the selection it makes, contradicting its comment; "Copy selection" from the palette ignores a selection in the command editor.
+  - Without shell integration, palette commands that need it give no feedback (the notice is drawn on the hidden editor panel).
+  - Dead code: the palette's own entry in `run_command` and the `Char(' ')` key in `bindings.rs` can never be reached.
 
 ## Milestones
 
@@ -59,12 +68,13 @@ Security, tests and performance come before new features ([ADR 0012](adr/0012-se
 - [x] **4. Editor-like input.**
   - [x] Command editor at the prompt: multi-line text with a free cursor, mouse and keyboard selection, copy, cut and paste; Enter runs, Shift+Enter breaks the line; in-memory history on Up and Down; Tab and Ctrl+R hand off to the shell's own completion and history search ([ADR 0016](adr/0016-command-editor-at-the-prompt.md)).
   - [x] Milestone audit: security, performance and general reviews, long robustness runs. Fixed: keys are decided when handled, so keys typed just after Enter reach the shell as typed and focus is never lost; only keys that keep the shell's line empty reach it from the editor; AltGr characters are typed instead of running shortcuts; the editor's text is bounded (a long single line made every key slow); the panel shrinks only at a new prompt; clearer panel states ([ADR 0017](adr/0017-command-editor-key-handling.md)). Low findings are listed in the quality track.
-- [ ] **5. Workspace.**
+- [x] **5. Workspace.**
   - [x] Tabs and split panes: each pane runs its own shell with its own command editor; new tab, close pane (asking again when a command is running), next and previous tab, split right or down, move the focus, drag the splits ([ADR 0019](adr/0019-tabs-and-split-panes.md)).
   - [x] Command palette (Ctrl+Shift+P, Cmd+Shift+P on macOS): search and run tab, pane, block, clipboard and configuration commands; while it is open no key reaches a shell.
   - [x] TOML configuration with live reload: font, shell, colours and two built-in themes ([ADR 0020](adr/0020-toml-configuration.md), [configuration](configuration.md)).
   - [x] Configurable shortcuts: the `[keys]` table gives any palette action a shortcut or removes it, with the platform's copy and paste keys fixed ([ADR 0021](adr/0021-configurable-keybindings.md)).
   - [x] New tabs and panes start in the focused pane's directory, which the shell reports in its signed prompt marks ([ADR 0022](adr/0022-working-directory-from-signed-marks.md)).
+  - [x] Milestone audit: security, performance and general reviews, long robustness runs. Fixed: the shell integration, and its token, load only with shell arguments known not to keep the scripts from running (a login bash, for example, left the token exported to every program); bash reads the integration before its own options; on Unix a configuration directory others can write is refused before the file is opened, so a planted pipe cannot block the window; "Close pane" from the palette can be confirmed, and the notice names the shortcut in effect; palette commands for a pane do nothing once that pane has closed; a configured shell that cannot start falls back to the default shell with a notice, instead of closing the window; a prompt without a usable directory forgets the previous one; bash and zsh encode the directory only when it changes, without a subshell (a prompt took 13 ms in Git Bash, now under 1 ms); panes in hidden tabs no longer take a snapshot of their screen on every output. Low findings are listed in the quality track.
 - [ ] **6. Completions and assistant.** History and path completions, command specifications, optional AI providers (own API key or local model).
 - [ ] **7. Interface design.** One design pass over the whole interface once its features are in place: how the command editor relates to the prompt and the blocks (today it sits far from the prompt on a mostly empty screen, its marker is small and faint, and the panel does not read as part of the current block), blocks, tabs, panels and the default theme.
 - [ ] **8. Distribution.** Signed installers and packages for each platform, published from CI.

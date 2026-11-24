@@ -126,13 +126,17 @@ pub fn spawn(
 /// which signs its marks with `token`. Prefer [`spawn`], which also makes
 /// the session require the token.
 ///
-/// Commands for unknown shells, or for which the integration files cannot
-/// be written, are returned unchanged: the shell then works as in any
-/// terminal, without command blocks.
+/// Commands for unknown shells, with arguments the integration is not known
+/// to work with, or for which the integration files cannot be written, are
+/// returned unchanged: the shell then works as in any terminal, without
+/// command blocks, and without the token.
 pub fn apply(command: ShellCommand, token: &MarkToken) -> ShellCommand {
     let Some(shell) = Shell::detect(&command.program) else {
         return command;
     };
+    if !integrates_with(shell, &command.args) {
+        return command;
+    }
     let with_token = |command: ShellCommand| command.env(TOKEN_VARIABLE, token.as_str());
     match shell {
         Shell::PowerShell => with_token(command)
@@ -141,9 +145,15 @@ pub fn apply(command: ShellCommand, token: &MarkToken) -> ShellCommand {
             .arg(encode_powershell(POWERSHELL)),
         Shell::Fish => with_token(command).arg("--init-command").arg(FISH),
         Shell::Bash => match write_files(&[("woop.bash", BASH)]) {
-            Some(dir) => with_token(command)
-                .arg("--rcfile")
-                .arg(dir.join("woop.bash")),
+            Some(dir) => {
+                let mut command = with_token(command);
+                // bash takes long options only before single-letter ones.
+                command.args.splice(
+                    0..0,
+                    ["--rcfile".into(), dir.join("woop.bash").into_os_string()],
+                );
+                command
+            }
             None => command,
         },
         Shell::Zsh => match write_files(&ZSH_FILES) {
@@ -158,6 +168,30 @@ pub fn apply(command: ShellCommand, token: &MarkToken) -> ShellCommand {
             None => command,
         },
     }
+}
+
+/// Whether the integration loads with every one of the user's `args`.
+///
+/// Only the scripts remove the token from the environment, so an argument
+/// that keeps them from running (a login bash ignores `--rcfile`, `-c` or
+/// `-File` run something else, `--norc` and `-f` skip start-up files) would
+/// leave it exported to every program in the pane, which could then forge
+/// signed marks (ADR 0018). Arguments not known to be harmless therefore
+/// turn the integration off.
+fn integrates_with(shell: Shell, args: &[std::ffi::OsString]) -> bool {
+    let allowed: &[&str] = match shell {
+        // PowerShell parameters ignore case.
+        Shell::PowerShell => &["-nologo", "-noprofile"],
+        Shell::Bash => &["-i"],
+        Shell::Zsh => &["-i", "-l", "--login"],
+        Shell::Fish => &["-i", "--interactive", "-l", "--login"],
+    };
+    args.iter().all(|arg| {
+        arg.to_str().is_some_and(|arg| match shell {
+            Shell::PowerShell => allowed.contains(&arg.to_ascii_lowercase().as_str()),
+            _ => allowed.contains(&arg),
+        })
+    })
 }
 
 /// Writes integration files into the per-user directory and returns it.
@@ -305,6 +339,54 @@ mod tests {
         // In the environment, never on the command line.
         assert_eq!(token_variable(&command).as_deref(), Some(token.as_str()));
         assert!(!args.iter().any(|arg| arg.contains(token.as_str())));
+    }
+
+    #[test]
+    fn arguments_that_could_skip_the_scripts_turn_the_integration_off() {
+        // The scripts remove the token from the environment; with these the
+        // shell would not run them, and every program would inherit it.
+        let cases: [(&str, &[&str]); 9] = [
+            ("bash", &["--login"]),
+            ("bash", &["-l"]),
+            ("bash", &["--norc"]),
+            ("bash", &["-c", "env"]),
+            ("zsh", &["-f"]),
+            ("zsh", &["--no-rcs"]),
+            ("pwsh.exe", &["-File", "script.ps1"]),
+            ("pwsh.exe", &["-Command", "Get-ChildItem env:"]),
+            ("fish", &["--no-config"]),
+        ];
+        for (program, args) in cases {
+            let command = args
+                .iter()
+                .fold(ShellCommand::new(program), |command, arg| command.arg(arg));
+            assert_eq!(
+                apply(command.clone(), &MarkToken::generate()),
+                command,
+                "{program} {args:?}"
+            );
+        }
+        // Known arguments keep it, PowerShell's in any case.
+        let token = MarkToken::generate();
+        for command in [
+            ShellCommand::new("pwsh.exe")
+                .arg("-nologo")
+                .arg("-NoProfile"),
+            ShellCommand::new("zsh").arg("-l"),
+            ShellCommand::new("fish").arg("--login"),
+        ] {
+            assert!(token_variable(&apply(command, &token)).is_some());
+        }
+    }
+
+    #[test]
+    fn bash_reads_the_integration_before_its_own_options() {
+        let command = apply(ShellCommand::new("bash").arg("-i"), &MarkToken::generate());
+        // Without integration files (no writable directory) it is unchanged.
+        if token_variable(&command).is_some() {
+            assert_eq!(command.args[0], "--rcfile");
+            assert_eq!(command.args[2], "-i");
+        }
     }
 
     #[test]

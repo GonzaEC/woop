@@ -107,6 +107,9 @@ struct Woop {
     config: Config,
     /// Why the configuration file could not be used, shown until fixed.
     config_error: Option<String>,
+    /// Why the configured shell could not start, shown while the default
+    /// shell is used instead.
+    shell_error: Option<String>,
     /// Font family names given to iced, which keeps them for the whole
     /// program; each distinct name is kept once.
     font_names: Vec<&'static str>,
@@ -132,6 +135,7 @@ impl Woop {
             pending_close: None,
             config: Config::default(),
             config_error: None,
+            shell_error: None,
             font_names: Vec::new(),
             command_palette: None,
             palette_target: None,
@@ -174,6 +178,10 @@ impl Woop {
         for pane in self.panes.values_mut() {
             pane.restyle(self.metrics, Arc::clone(&self.bindings));
         }
+        if config.shell != self.config.shell {
+            // Checked again when the next pane starts.
+            self.shell_error = None;
+        }
         self.config = config;
     }
 
@@ -200,6 +208,26 @@ impl Woop {
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
+        let task = self.handle(message);
+        // Whatever changed the shown tab, its panes are drawn next, from an
+        // up-to-date snapshot.
+        if let Some(tab) = self.tabs.get(self.active) {
+            for (_, id) in tab.grid.iter() {
+                if let Some(pane) = self.panes.get_mut(id) {
+                    pane.show();
+                }
+            }
+        }
+        task
+    }
+
+    /// Whether pane `id` is in the shown tab.
+    fn is_shown(&self, id: PaneId) -> bool {
+        self.tab()
+            .is_some_and(|tab| tab.grid.iter().any(|(_, &pane)| pane == id))
+    }
+
+    fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::ListenerReady(sender) => {
                 if self.output.is_none() {
@@ -208,10 +236,13 @@ impl Woop {
                 }
             }
             Message::Output(id) => {
+                let shown = self.is_shown(id);
                 let Some(pane) = self.panes.get_mut(&id) else {
                     return Task::none();
                 };
-                let task = pane.process_output().map(move |m| Message::Pane(id, m));
+                let task = pane
+                    .process_output(shown)
+                    .map(move |m| Message::Pane(id, m));
                 // A pane closes when its shell exits.
                 if pane.is_closed() {
                     return Task::batch([task, self.close_pane(id)]);
@@ -272,6 +303,8 @@ impl Woop {
             }
             Message::SelectTab(index) => {
                 if index < self.tabs.len() {
+                    // The close request was for a pane no longer shown.
+                    self.pending_close = None;
                     self.active = index;
                     return self.focus_current();
                 }
@@ -345,9 +378,18 @@ impl Woop {
             layout = layout.push(self.tab_bar());
         }
         let notices = [
-            self.pending_close.map(|_| close_prompt().to_owned()),
+            self.pending_close.map(|_| {
+                close_prompt(palette::shortcut(
+                    Command::ClosePane,
+                    keys::Shortcuts::platform(),
+                    &self.bindings,
+                ))
+            }),
             self.config_error.as_ref().map(|error| {
                 format!("Configuration not applied, the previous settings stay: {error}")
+            }),
+            self.shell_error.as_ref().map(|error| {
+                format!("The configured shell could not start, the default shell is used: {error}")
             }),
         ];
         for notice in notices.into_iter().flatten() {
@@ -413,6 +455,15 @@ impl Woop {
     fn run_command(&mut self, command: Command) -> Task<Message> {
         let target = self.palette_target;
         let task = self.close_palette();
+        // A command that acts on a pane runs only on the one the palette
+        // was opened for: if it closed in the meantime, another pane now has
+        // the focus and the user did not choose it.
+        let on_target = self
+            .focused()
+            .is_some_and(|focused| still_target(target, focused));
+        if acts_on_pane(command) && !on_target {
+            return task;
+        }
         // Kept while the command runs, for the pane commands.
         self.palette_target = target;
         let run = match command {
@@ -627,7 +678,7 @@ impl Woop {
     }
 
     fn workspace(&mut self, action: WorkspaceAction) -> Task<Message> {
-        if action != WorkspaceAction::ClosePane {
+        if withdraws_close(action) {
             self.pending_close = None;
         }
         match action {
@@ -692,20 +743,25 @@ impl Woop {
         let notify = move || {
             let _ = output.unbounded_send(id);
         };
-        let command = match &self.config.shell {
-            Some(shell) => shell
+        let configured = self.config.shell.as_ref().map(|shell| {
+            shell
                 .args
                 .iter()
                 .fold(ShellCommand::new(&shell.program), |command, arg| {
                     command.arg(arg)
-                }),
-            None => ShellCommand::default_shell(),
-        };
-        let command = match directory {
-            Some(directory) => command.cwd(directory),
-            None => command,
-        };
-        match shell_integration::spawn(command, size, notify) {
+                })
+        });
+        let (started, shell_error) = start_shell(configured, |command| {
+            let command = match &directory {
+                Some(directory) => command.cwd(directory),
+                None => command,
+            };
+            shell_integration::spawn(command, size, notify.clone())
+        });
+        if self.config.shell.is_some() {
+            self.shell_error = shell_error;
+        }
+        match started {
             Ok(session) => {
                 self.panes.insert(
                     id,
@@ -780,12 +836,79 @@ impl Woop {
                 if self.tabs.is_empty() {
                     return iced::exit();
                 }
-                if self.active >= index && self.active > 0 {
-                    self.active -= 1;
-                }
+                self.active = active_after_closing(self.active, index);
             }
         }
         self.focus_current()
+    }
+}
+
+/// Starts the configured shell with `start`, or the default shell when none
+/// is configured or the configured one cannot start, so that a mistake in
+/// the configuration never leaves the window without a pane. Also returns
+/// why the configured shell could not start.
+fn start_shell<S, E: std::fmt::Display>(
+    configured: Option<ShellCommand>,
+    mut start: impl FnMut(ShellCommand) -> Result<S, E>,
+) -> (Result<S, E>, Option<String>) {
+    let Some(command) = configured else {
+        return (start(ShellCommand::default_shell()), None);
+    };
+    match start(command) {
+        Ok(session) => (Ok(session), None),
+        Err(error) => (
+            start(ShellCommand::default_shell()),
+            Some(error.to_string()),
+        ),
+    }
+}
+
+/// The index of the shown tab after tab `closed` is removed, when tab
+/// `active` was shown: the same tab if another closed, the one before it if
+/// it closed itself (or the new first tab).
+fn active_after_closing(active: usize, closed: usize) -> usize {
+    if active >= closed && active > 0 {
+        active - 1
+    } else {
+        active
+    }
+}
+
+/// Whether `action` withdraws a request to close a pane with a running
+/// command. Opening the palette does not, so that "Close pane" can be chosen
+/// in it again to confirm.
+fn withdraws_close(action: WorkspaceAction) -> bool {
+    !matches!(
+        action,
+        WorkspaceAction::ClosePane | WorkspaceAction::CommandPalette
+    )
+}
+
+/// Whether a palette command acts on the focused pane, and so may run only
+/// on the pane the palette was opened for.
+fn acts_on_pane(command: Command) -> bool {
+    match command {
+        Command::CommandPalette
+        | Command::NewTab
+        | Command::NextTab
+        | Command::PreviousTab
+        | Command::CopyConfigPath
+        | Command::ReloadConfig => false,
+        Command::ClosePane
+        | Command::SplitRight
+        | Command::SplitDown
+        | Command::FocusLeft
+        | Command::FocusRight
+        | Command::FocusUp
+        | Command::FocusDown
+        | Command::CopyLastCommandLine
+        | Command::CopyLastOutput
+        | Command::ToggleLastOutput
+        | Command::ScrollToBottom
+        | Command::PreviousBlock
+        | Command::NextBlock
+        | Command::CopySelection
+        | Command::Paste => true,
     }
 }
 
@@ -829,13 +952,14 @@ fn tab_label(index: usize, title: &str) -> String {
     format!("{} {label}", index + 1)
 }
 
-/// Asks for a second request before ending a running command.
-fn close_prompt() -> &'static str {
-    match keys::Shortcuts::platform() {
-        keys::Shortcuts::MacOs => "A command is still running: press Cmd+W again to close it",
-        keys::Shortcuts::Windows | keys::Shortcuts::Unix => {
-            "A command is still running: press Ctrl+Shift+W again to close it"
+/// Asks for a second request before ending a running command, naming the
+/// close shortcut in effect, if it has one.
+fn close_prompt(shortcut: Option<String>) -> String {
+    match shortcut {
+        Some(shortcut) => {
+            format!("A command is still running: press {shortcut} again to close it")
         }
+        None => "A command is still running: choose Close pane again to close it".to_owned(),
     }
 }
 
@@ -936,6 +1060,81 @@ mod tests {
         // Pane 1 closed while the palette was open; pane 2 got the focus.
         assert!(!still_target(Some(1), 2));
         assert!(!still_target(None, 2));
+    }
+
+    #[test]
+    fn workspace_commands_from_the_palette_need_their_pane() {
+        // Closing, splitting and moving the focus act on a pane: they must
+        // not reach a sibling that got the focus when the target closed.
+        for command in [
+            Command::ClosePane,
+            Command::SplitRight,
+            Command::SplitDown,
+            Command::FocusLeft,
+            Command::FocusDown,
+            Command::Paste,
+        ] {
+            assert!(acts_on_pane(command), "{command:?}");
+        }
+        for command in [Command::NewTab, Command::NextTab, Command::ReloadConfig] {
+            assert!(!acts_on_pane(command), "{command:?}");
+        }
+    }
+
+    #[test]
+    fn opening_the_palette_keeps_a_close_request() {
+        // Otherwise "Close pane" chosen in the palette asks again forever.
+        assert!(!withdraws_close(WorkspaceAction::CommandPalette));
+        assert!(!withdraws_close(WorkspaceAction::ClosePane));
+        assert!(withdraws_close(WorkspaceAction::NewTab));
+        assert!(withdraws_close(WorkspaceAction::SplitRight));
+        assert!(withdraws_close(WorkspaceAction::Focus(Direction::Left)));
+    }
+
+    #[test]
+    fn the_close_request_names_the_shortcut_in_effect() {
+        assert_eq!(
+            close_prompt(Some("Ctrl+Shift+Q".to_owned())),
+            "A command is still running: press Ctrl+Shift+Q again to close it"
+        );
+        // With the shortcut removed, the palette is the way to confirm.
+        assert!(close_prompt(None).contains("choose Close pane again"));
+    }
+
+    #[test]
+    fn a_shell_that_cannot_start_falls_back_to_the_default() {
+        let configured = ShellCommand::new("no-such-shell");
+        let mut tried = Vec::new();
+        let (started, error) = start_shell(Some(configured.clone()), |command| {
+            tried.push(command.clone());
+            if command == ShellCommand::default_shell() {
+                Ok("session")
+            } else {
+                Err("not found")
+            }
+        });
+        assert_eq!(started, Ok("session"));
+        assert_eq!(error.as_deref(), Some("not found"));
+        assert_eq!(tried, [configured, ShellCommand::default_shell()]);
+
+        // A shell that starts is used, and nothing is reported.
+        let (started, error) = start_shell(Some(ShellCommand::new("sh")), |_| Ok::<_, &str>(1));
+        assert_eq!((started, error), (Ok(1), None));
+        let (_, error) = start_shell(None, |_| Err::<(), _>("broken"));
+        assert_eq!(error, None, "only the configured shell is reported");
+    }
+
+    #[test]
+    fn closing_a_tab_keeps_the_shown_one() {
+        // Tabs 0..=3, tab 2 shown.
+        assert_eq!(active_after_closing(2, 0), 1, "one before it closed");
+        assert_eq!(active_after_closing(2, 3), 2, "one after it closed");
+        assert_eq!(active_after_closing(2, 2), 1, "it closed: the previous one");
+        assert_eq!(
+            active_after_closing(0, 0),
+            0,
+            "the first closed: the new first"
+        );
     }
 
     #[test]

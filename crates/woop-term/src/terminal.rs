@@ -301,8 +301,10 @@ impl Terminal {
             start = end;
         }
         self.feed(&bytes[start..]);
+        // Each prompt reports where the shell is; one without a usable
+        // directory leaves none known, rather than an earlier one.
         if let Some(directory) = self.marks.take_directory() {
-            self.current_directory = Some(directory);
+            self.current_directory = directory;
         }
     }
 
@@ -514,6 +516,16 @@ impl Terminal {
             return None;
         }
         self.blocks.awaiting_command(&self.term)
+    }
+
+    /// Returns the id of the block whose prompt is shown, past the command
+    /// start mark and before any output, as [`Screen::command_prompt`]
+    /// reports it, without taking a snapshot.
+    pub fn command_prompt(&self) -> Option<u64> {
+        if self.term.mode().contains(TermMode::ALT_SCREEN) {
+            return None;
+        }
+        self.blocks.command_prompt()
     }
 
     /// The rows of the view: the grid lines in view, with collapsed blocks
@@ -732,6 +744,42 @@ mod tests {
 
     fn terminal(rows: u16, cols: u16) -> Terminal {
         Terminal::new(TerminalSize::new(rows, cols))
+    }
+
+    #[test]
+    fn a_prompt_without_a_directory_forgets_the_previous_one() {
+        let token = MarkToken::generate();
+        let mut term = terminal(4, 40);
+        term.require_mark_token(&token);
+        let root = if cfg!(windows) { "C:%5Cproj" } else { "/proj" };
+        let token = token.as_str();
+        term.advance(format!("\x1b]133;A;woop={token};cwd={root}\x07$ ").as_bytes());
+        assert!(term.current_directory().is_some());
+
+        // The shell moved somewhere it could not report: new panes must
+        // not open in the old directory.
+        term.advance(format!("\x1b]133;A;woop={token}\x07$ ").as_bytes());
+        assert_eq!(term.current_directory(), None);
+    }
+
+    #[test]
+    fn prompt_state_without_a_snapshot_matches_the_snapshot() {
+        // Hidden panes read these instead of taking a snapshot.
+        let mut term = terminal(4, 40);
+        let check = |term: &Terminal| {
+            let screen = term.screen();
+            assert_eq!(term.command_prompt(), screen.command_prompt);
+            assert_eq!(term.awaiting_command(), screen.awaiting_command);
+        };
+        check(&term);
+        term.advance(b"\x1b]133;A\x07$ \x1b]133;B\x07");
+        assert!(term.command_prompt().is_some());
+        check(&term);
+        term.advance(b"\x1b[?1049h");
+        assert_eq!(term.command_prompt(), None, "none on the alternate screen");
+        check(&term);
+        term.advance(b"\x1b[?1049l\x1b]133;C\x07output\r\n");
+        check(&term);
     }
 
     #[test]

@@ -55,6 +55,8 @@ A shortcut is written as modifiers and a key joined by `+`: modifiers `Ctrl`, `A
 
 Some shortcuts take keys from the shell: Ctrl+C interrupts a command, Ctrl+D ends input, Ctrl+Z suspends, Ctrl+R searches the history. Woop allows them, but the shell no longer receives them. On macOS, Option with a character types characters (å, @), so such shortcuts are ignored there. A shortcut with a symbol that needs Shift on your keyboard is written with the symbol Shift produces (`Ctrl+Shift+!`, not `Ctrl+Shift+1`).
 
-On macOS and Linux, Woop ignores the file if other users could change it or the directory it is in, since it chooses the program Woop starts (`chmod 600` on the file fixes it). The shell program must be an absolute path or a name found in `PATH`.
+On macOS and Linux, Woop ignores the file if other users could change it or the directory it is in, since it chooses the program Woop starts (`chmod 600` on the file fixes it). The shell program must be an absolute path or a name found in `PATH`; if it cannot start, the pane opens your default shell and says why.
+
+Command blocks and the command editor need Woop's shell integration, which loads only with shell arguments known not to keep it from running: `-NoLogo` and `-NoProfile` for PowerShell, `-i` for bash, `-i`, `-l` and `--login` for zsh and fish. With any other argument (a login bash, `-Command`, `-c`), the shell starts without it, as in a plain terminal.
 
 The decisions behind this are in [ADR 0020](adr/0020-toml-configuration.md).

@@ -77,8 +77,9 @@ pub(crate) struct MarkScanner {
     /// `woop=<token>` option (ADR 0018).
     token: Option<Vec<u8>>,
     /// The working directory reported by the last accepted prompt mark,
-    /// until taken (ADR 0022).
-    directory: Option<String>,
+    /// until taken (ADR 0022): `Some(None)` when that mark had no usable
+    /// one.
+    directory: Option<Option<String>>,
 }
 
 /// Shows only the scanner's state: the token, and the payload of a mark
@@ -120,8 +121,10 @@ impl MarkScanner {
         self.token = Some(token.to_vec());
     }
 
-    /// The working directory reported since the last call, if any.
-    pub(crate) fn take_directory(&mut self) -> Option<String> {
+    /// The working directory reported by the last prompt mark accepted
+    /// since the last call, if one was accepted: `Some(None)` when that mark
+    /// had no usable directory, which then is not known any more.
+    pub(crate) fn take_directory(&mut self) -> Option<Option<String>> {
         self.directory.take()
     }
 
@@ -197,10 +200,8 @@ impl MarkScanner {
                 (State::Csi, _) => State::Csi,
                 (State::Osc, BEL) => {
                     if let Some(mark) = self.mark(&self.payload) {
-                        if mark == Mark::PromptStart
-                            && let Some(directory) = directory(&self.payload)
-                        {
-                            self.directory = Some(directory);
+                        if mark == Mark::PromptStart {
+                            self.directory = Some(directory(&self.payload));
                         }
                         marks.push((index + 1, mark));
                     }
@@ -218,10 +219,8 @@ impl MarkScanner {
                 }
                 (State::OscEscape, b'\\') => {
                     if let Some(mark) = self.mark(&self.payload) {
-                        if mark == Mark::PromptStart
-                            && let Some(directory) = directory(&self.payload)
-                        {
-                            self.directory = Some(directory);
+                        if mark == Mark::PromptStart {
+                            self.directory = Some(directory(&self.payload));
                         }
                         marks.push((index + 1, mark));
                     }
@@ -404,13 +403,27 @@ mod tests {
         scanner.require_token(b"t0k");
         let mark = format!("\x1b]133;A;woop=t0k;cwd={}\x07", encode(&directory));
         assert_eq!(scanner.scan(mark.as_bytes()).len(), 1);
-        assert_eq!(scanner.take_directory(), Some(directory.clone()));
+        assert_eq!(scanner.take_directory(), Some(Some(directory.clone())));
         assert_eq!(scanner.take_directory(), None, "taken once");
 
         // A forged mark, without the token, sets nothing.
         let forged = format!("\x1b]133;A;cwd={}\x07", encode(&absolute("evil")));
         scanner.scan(forged.as_bytes());
         assert_eq!(scanner.take_directory(), None);
+    }
+
+    #[test]
+    fn a_signed_prompt_without_a_directory_reports_none() {
+        let mut scanner = MarkScanner::default();
+        scanner.require_token(b"t0k");
+        let first = format!("\x1b]133;A;woop=t0k;cwd={}\x07", encode(&absolute("a")));
+        scanner.scan(first.as_bytes());
+        // A later prompt with no usable directory replaces it, in the same
+        // read or a later one.
+        scanner.scan(b"\x1b]133;A;woop=t0k\x07");
+        assert_eq!(scanner.take_directory(), Some(None));
+        scanner.scan(b"\x1b]133;A;woop=t0k;cwd=%FF\x1b\\");
+        assert_eq!(scanner.take_directory(), Some(None));
     }
 
     #[test]
@@ -422,10 +435,10 @@ mod tests {
         };
         // Relative, empty, broken escapes, control characters, not UTF-8.
         for encoded in ["relative/dir", "", "%zz", "%4", "%0A", "%FF%FE"] {
-            assert_eq!(check(encoded), None, "{encoded:?}");
+            assert_eq!(check(encoded), Some(None), "{encoded:?}");
         }
         let with_newline = format!("{}%0A", encode(&absolute("x")));
-        assert_eq!(check(&with_newline), None);
+        assert_eq!(check(&with_newline), Some(None));
         // Only prompt-start marks report a directory.
         let mut scanner = MarkScanner::default();
         scanner.scan(format!("\x1b]133;B;cwd={}\x07", encode(&absolute("x"))).as_bytes());
@@ -437,7 +450,7 @@ mod tests {
         let directory = absolute(&"d".repeat(MAX_PAYLOAD - 200));
         let mut scanner = MarkScanner::default();
         scanner.scan(format!("\x1b]133;A;cwd={}\x07", encode(&directory)).as_bytes());
-        assert_eq!(scanner.take_directory(), Some(directory));
+        assert_eq!(scanner.take_directory(), Some(Some(directory)));
     }
 
     #[test]

@@ -21,7 +21,7 @@ graph TD
 1. **`woop-pty`** spawns the user's shell attached to a pseudo-terminal (ConPTY on Windows, the native PTY interface on Unix) and exposes byte streams for reading output and writing input.
 2. **`woop-term`** parses the output stream (VT/ANSI escape sequences) and updates the screen grid and scrollback. Shell integration markers split the stream into **command blocks**: prompt, command, output and exit status.
 3. **`woop-app`** renders the grid and blocks on the GPU, translates keyboard and mouse events into input for the shell, and hosts the interface: tabs, splits, the command palette and the editor-like input.
-4. **`woop-config`** reads and validates the user's `config.toml` (font, shell, colours and themes) into its own types, and reports when the file changes ([ADR 0020](adr/0020-toml-configuration.md)). Keybindings are not configurable yet.
+4. **`woop-config`** reads and validates the user's `config.toml` (font, shell, colours and themes) into its own types, and reports when the file changes ([ADR 0020](adr/0020-toml-configuration.md)). Its `[keys]` table changes the keyboard shortcuts ([ADR 0021](adr/0021-configurable-keybindings.md)).
 5. **`woop-ai`** provides optional assistant features through a common provider interface. It is inactive unless the user configures a provider.
 
 ## Core types

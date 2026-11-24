@@ -68,8 +68,19 @@ if [ -z "$__woop_integrated" ]; then
         __woop_at_prompt=1
         # The current directory, so that new panes open here. Left out when
         # too long for the mark, which would then be dropped as a whole.
-        local directory
-        directory=$(__woop_encode "$PWD")
+        # Encoded again only when it changed, and without a subshell (which
+        # costs milliseconds at every prompt) when it holds only characters
+        # that need no encoding. The class is spelled out: a range such as
+        # a-z may match other letters in some locales.
+        if [ "$PWD" != "$__woop_pwd" ]; then
+            __woop_pwd=$PWD
+            case $PWD in
+                *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.~_/-]*)
+                    __woop_directory=$(__woop_encode "$PWD") ;;
+                *) __woop_directory=$PWD ;;
+            esac
+        fi
+        local directory=$__woop_directory
         if [ "${#directory}" -gt 3800 ]; then
             directory=
         else

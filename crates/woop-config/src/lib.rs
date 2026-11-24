@@ -138,8 +138,11 @@ pub fn load(path: &Path) -> Result<Option<Config>, ConfigError> {
         path: shown.clone(),
         message: error.to_string(),
     };
-    // Everything is checked on the open file, not on the path again, so the
-    // file cannot be swapped between the checks and the read.
+    // The directory first: if others could write it, they could have put a
+    // pipe there, and opening it would block until something writes to it.
+    check_private_dir(path)?;
+    // Everything else is checked on the open file, not on the path again, so
+    // the file cannot be swapped between the checks and the read.
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -171,17 +174,30 @@ pub fn load(path: &Path) -> Result<Option<Config>, ConfigError> {
     parse(&text).map(Some)
 }
 
-/// On Unix, refuses a file that other users can write, or that sits in a
-/// directory they can write: it chooses the program Woop runs.
+/// Whether a Unix mode lets the group or others write.
+#[cfg(unix)]
+fn writable_by_others(mode: u32) -> bool {
+    mode & 0o022 != 0
+}
+
+/// On Unix, refuses a file that other users can write: it chooses the
+/// program Woop runs.
 #[cfg(unix)]
 fn check_private(path: &Path, metadata: &std::fs::Metadata) -> Result<(), ConfigError> {
     use std::os::unix::fs::PermissionsExt;
-    let writable_by_others = |mode: u32| mode & 0o022 != 0;
     if writable_by_others(metadata.permissions().mode()) {
         return Err(ConfigError::NotPrivate {
             path: path.display().to_string(),
         });
     }
+    Ok(())
+}
+
+/// On Unix, refuses a file in a directory that other users can write, where
+/// they could replace it.
+#[cfg(unix)]
+fn check_private_dir(path: &Path) -> Result<(), ConfigError> {
+    use std::os::unix::fs::PermissionsExt;
     if let Some(dir) = path.parent()
         && let Ok(dir_metadata) = std::fs::metadata(dir)
         && writable_by_others(dir_metadata.permissions().mode())
@@ -190,6 +206,12 @@ fn check_private(path: &Path, metadata: &std::fs::Metadata) -> Result<(), Config
             path: dir.display().to_string(),
         });
     }
+    Ok(())
+}
+
+/// Elsewhere, directories in the user's profile are private to the user.
+#[cfg(not(unix))]
+fn check_private_dir(_path: &Path) -> Result<(), ConfigError> {
     Ok(())
 }
 
@@ -560,6 +582,30 @@ mod tests {
         assert!(load(&path).is_ok());
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).expect("chmod");
         assert!(matches!(load(&path), Err(ConfigError::NotPrivate { .. })));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_planted_by_others_does_not_block() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("fifo");
+        let path = dir.join("config.toml");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .expect("run mkfifo");
+        assert!(made.success());
+        // Others can write the directory, so they could have made the pipe:
+        // it is refused before it is opened, which would block.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(load(&path));
+        });
+        let result = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("load returned without blocking");
+        assert!(matches!(result, Err(ConfigError::NotPrivate { .. })));
     }
 
     #[test]
