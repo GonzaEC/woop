@@ -366,17 +366,20 @@ mod tests {
                 "{program} {args:?}"
             );
         }
-        // Known arguments keep it, PowerShell's in any case.
+        // Known arguments keep it, PowerShell's in any case. PowerShell and
+        // fish receive their scripts inline, so this holds without a
+        // writable integration directory (Windows CI has no `HOME`).
         let token = MarkToken::generate();
         for command in [
             ShellCommand::new("pwsh.exe")
                 .arg("-nologo")
                 .arg("-NoProfile"),
-            ShellCommand::new("zsh").arg("-l"),
             ShellCommand::new("fish").arg("--login"),
         ] {
             assert!(token_variable(&apply(command, &token)).is_some());
         }
+        assert!(integrates_with(Shell::Zsh, &["-l".into()]));
+        assert!(integrates_with(Shell::Bash, &["-i".into()]));
     }
 
     #[test]
