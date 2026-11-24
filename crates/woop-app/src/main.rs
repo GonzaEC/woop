@@ -2,12 +2,14 @@
 //! (ADR 0019).
 
 mod bindings;
+mod completion;
 mod editor;
 mod gate;
 mod history;
 mod keys;
 mod palette;
 mod pane;
+mod shell_history;
 mod theme;
 mod view;
 
@@ -68,6 +70,8 @@ pub enum Message {
     PaletteRun(Command),
     /// The command palette was dismissed with a click outside it.
     PaletteClose,
+    /// A shell's history file was read (ADR 0023).
+    ShellHistory(shell_integration::Shell, Arc<[String]>),
 }
 
 /// Most different font family names kept during one run (ADR 0020).
@@ -96,6 +100,8 @@ struct Woop {
     next_id: PaneId,
     /// Commands submitted from any pane's editor.
     history: History,
+    /// Shells whose history file has been asked for, read once each.
+    histories_read: Vec<shell_integration::Shell>,
     palette: Palette,
     /// The keyboard shortcuts in effect (ADR 0021).
     bindings: Arc<Bindings>,
@@ -129,6 +135,7 @@ impl Woop {
             active: 0,
             next_id: 0,
             history: History::default(),
+            histories_read: Vec::new(),
             palette: Palette::default(),
             bindings: Arc::new(Bindings::default()),
             metrics: Metrics::measure(view::default_font(), woop_config::DEFAULT_FONT_SIZE),
@@ -334,6 +341,7 @@ impl Woop {
                 }
             }
             Message::PaletteClose => return self.close_palette(),
+            Message::ShellHistory(shell, commands) => self.history.set_file(shell, commands),
         }
         Task::none()
     }
@@ -731,7 +739,9 @@ impl Woop {
     }
 
     /// Starts a shell in a new pane, at the size of the focused pane.
-    fn spawn_pane(&mut self) -> Option<PaneId> {
+    /// Starts a pane, and reads its shell's history file if no pane has yet
+    /// (ADR 0023).
+    fn spawn_pane(&mut self) -> Option<(PaneId, Task<Message>)> {
         let output = self.output.clone()?;
         let id = self.next_id;
         self.next_id += 1;
@@ -751,7 +761,10 @@ impl Woop {
                     command.arg(arg)
                 })
         });
+        let mut shell = None;
         let (started, shell_error) = start_shell(configured, |command| {
+            // The last command tried is the one that runs.
+            shell = shell_integration::Shell::detect(&command.program);
             let command = match &directory {
                 Some(directory) => command.cwd(directory),
                 None => command,
@@ -765,9 +778,16 @@ impl Woop {
             Ok(session) => {
                 self.panes.insert(
                     id,
-                    Pane::new(id, session, size, self.metrics, Arc::clone(&self.bindings)),
+                    Pane::new(
+                        id,
+                        session,
+                        size,
+                        self.metrics,
+                        Arc::clone(&self.bindings),
+                        shell,
+                    ),
                 );
-                Some(id)
+                Some((id, self.read_history(shell)))
             }
             Err(error) => {
                 eprintln!("woop: failed to start the shell: {error}");
@@ -776,8 +796,31 @@ impl Woop {
         }
     }
 
+    /// Reads `shell`'s history file on a thread of its own, once per window.
+    fn read_history(&mut self, shell: Option<shell_integration::Shell>) -> Task<Message> {
+        let Some(shell) = shell.filter(|shell| !self.histories_read.contains(shell)) else {
+            return Task::none();
+        };
+        self.histories_read.push(shell);
+        Task::perform(
+            async move {
+                let (sender, receiver) = iced::futures::channel::oneshot::channel();
+                let started = std::thread::Builder::new()
+                    .name("woop-history".to_owned())
+                    .spawn(move || {
+                        let _ = sender.send(shell_history::load(shell));
+                    });
+                match started {
+                    Ok(_) => receiver.await.unwrap_or_default(),
+                    Err(_) => Vec::new(),
+                }
+            },
+            move |commands| Message::ShellHistory(shell, commands.into()),
+        )
+    }
+
     fn new_tab(&mut self) -> Task<Message> {
-        let Some(id) = self.spawn_pane() else {
+        let Some((id, read)) = self.spawn_pane() else {
             // Without any pane there is nothing to show.
             return if self.tabs.is_empty() {
                 iced::exit()
@@ -790,20 +833,20 @@ impl Woop {
         // the tab.
         self.tabs.push(Tab { id, grid, focus });
         self.active = self.tabs.len() - 1;
-        self.focus_current()
+        Task::batch([read, self.focus_current()])
     }
 
     fn split(&mut self, axis: pane_grid::Axis) -> Task<Message> {
-        let Some(id) = self.spawn_pane() else {
+        let Some((id, read)) = self.spawn_pane() else {
             return Task::none();
         };
         let Some(tab) = self.tabs.get_mut(self.active) else {
-            return Task::none();
+            return read;
         };
         if let Some((handle, _)) = tab.grid.split(axis, tab.focus, id) {
             tab.focus = handle;
         }
-        self.focus_current()
+        Task::batch([read, self.focus_current()])
     }
 
     /// Closes pane `id`, ending its session. Its tab closes with its last

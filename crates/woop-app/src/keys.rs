@@ -219,6 +219,14 @@ pub enum EditorKey {
     /// Type the editor's text into the shell's line, then these bytes, and
     /// leave the rest of the prompt to the shell's own line editor.
     HandOff(Vec<u8>),
+    /// Complete the word or command at the cursor (ADR 0023).
+    Complete,
+    /// Choose another entry of the completion list.
+    CompletionMove(isize),
+    /// Insert the chosen completion.
+    CompletionAccept,
+    /// Close the completion list.
+    CompletionClose,
 }
 
 /// State of the command editor needed to interpret a key press.
@@ -235,6 +243,8 @@ pub struct EditorContext {
     pub on_first_line: bool,
     /// The cursor is on the editor's last line.
     pub on_last_line: bool,
+    /// The completion list is open.
+    pub completing: bool,
 }
 
 /// Interprets a key press in the command editor. `text` is what the key
@@ -258,6 +268,20 @@ pub fn editor_key(
         editor_active: false,
         ..context.keys.clone()
     };
+    if context.completing
+        && !modifiers.control()
+        && !modifiers.alt()
+        && !modifiers.logo()
+        && let WindowKey::Named(named) = key
+    {
+        match (named, modifiers.shift()) {
+            (Named::ArrowUp, false) | (Named::Tab, true) => return EditorKey::CompletionMove(-1),
+            (Named::ArrowDown, false) => return EditorKey::CompletionMove(1),
+            (Named::Enter | Named::Tab, false) => return EditorKey::CompletionAccept,
+            (Named::Escape, _) => return EditorKey::CompletionClose,
+            _ => {}
+        }
+    }
     match shortcut(key, modifiers, &keys) {
         Some(KeyAction::Copy) if context.has_selection => return EditorKey::Copy,
         Some(KeyAction::Copy) if context.keys.has_selection => return EditorKey::CopyGrid,
@@ -302,12 +326,15 @@ pub fn editor_key(
         }
         // The shell's completion and history search need the text in its
         // own line.
+        // Tab completes in Woop, which hands off to the shell when it has
+        // nothing to offer (ADR 0023); Shift+Tab still goes to the shell.
+        (WindowKey::Named(Named::Tab), _) if plain && !modifiers.shift() => EditorKey::Complete,
         (WindowKey::Named(Named::Tab), _) if plain => {
             input::encode_key(Key::Tab, terminal_modifiers, context.keys.mode)
                 .map_or(EditorKey::Ignore, EditorKey::HandOff)
         }
         // Control codes that mean Tab and Enter to the shell.
-        (_, Some('i')) if ctrl_only => EditorKey::HandOff(b"\t".to_vec()),
+        (_, Some('i')) if ctrl_only => EditorKey::Complete,
         (_, Some('j' | 'm')) if ctrl_only => EditorKey::Submit,
         (_, Some('r')) if ctrl_only => EditorKey::HandOff(vec![0x12]),
         // The shell does not see keys while the editor is active, so Ctrl+C
@@ -657,6 +684,7 @@ mod tests {
         on_first_line: bool,
         on_last_line: bool,
         bracketed_paste: bool,
+        completing: bool,
     }
 
     const EDITOR: Editor = Editor {
@@ -667,6 +695,7 @@ mod tests {
         on_first_line: true,
         on_last_line: true,
         bracketed_paste: false,
+        completing: false,
     };
 
     impl Editor {
@@ -695,6 +724,7 @@ mod tests {
                 is_empty: self.is_empty,
                 on_first_line: self.on_first_line,
                 on_last_line: self.on_last_line,
+                completing: self.completing,
             };
             editor_key(&key, modifiers, text, context)
         }
@@ -740,10 +770,14 @@ mod tests {
     }
 
     #[test]
-    fn tab_and_ctrl_r_hand_off_to_the_shell() {
+    fn tab_completes_and_ctrl_r_hands_off_to_the_shell() {
         assert_eq!(
             EDITOR.key(named(Named::Tab), WindowModifiers::empty()),
-            EditorKey::HandOff(b"\t".to_vec())
+            EditorKey::Complete
+        );
+        assert_eq!(
+            EDITOR.key(character("i"), WindowModifiers::CTRL),
+            EditorKey::Complete
         );
         assert_eq!(
             EDITOR.key(named(Named::Tab), WindowModifiers::SHIFT),
@@ -753,6 +787,47 @@ mod tests {
             EDITOR.key(character("r"), WindowModifiers::CTRL),
             EditorKey::HandOff(vec![0x12])
         );
+    }
+
+    #[test]
+    fn the_completion_list_takes_its_keys_while_open() {
+        let open = Editor {
+            completing: true,
+            on_first_line: false,
+            ..EDITOR
+        };
+        let none = WindowModifiers::empty();
+        let shift = WindowModifiers::SHIFT;
+        assert_eq!(
+            open.key(named(Named::ArrowUp), none),
+            EditorKey::CompletionMove(-1)
+        );
+        assert_eq!(
+            open.key(named(Named::ArrowDown), none),
+            EditorKey::CompletionMove(1)
+        );
+        assert_eq!(
+            open.key(named(Named::Tab), shift),
+            EditorKey::CompletionMove(-1)
+        );
+        assert_eq!(
+            open.key(named(Named::Tab), none),
+            EditorKey::CompletionAccept
+        );
+        assert_eq!(
+            open.key(named(Named::Enter), none),
+            EditorKey::CompletionAccept
+        );
+        assert_eq!(
+            open.key(named(Named::Escape), none),
+            EditorKey::CompletionClose
+        );
+        // Other keys keep their meaning; the pane closes the list first.
+        assert_eq!(open.key(named(Named::Enter), shift), EditorKey::Newline);
+        assert_eq!(open.key(character("a"), none), EditorKey::Edit);
+        // Closed, the same keys do what they always did.
+        assert_eq!(EDITOR.key(named(Named::Escape), none), EditorKey::Ignore);
+        assert_eq!(EDITOR.key(named(Named::Enter), none), EditorKey::Submit);
     }
 
     #[test]
@@ -926,10 +1001,7 @@ mod tests {
     #[test]
     fn control_codes_for_tab_and_enter_act_as_those_keys() {
         let ctrl = WindowModifiers::CTRL;
-        assert_eq!(
-            EDITOR.key(character("i"), ctrl),
-            EditorKey::HandOff(b"\t".to_vec())
-        );
+        assert_eq!(EDITOR.key(character("i"), ctrl), EditorKey::Complete);
         assert_eq!(EDITOR.key(character("m"), ctrl), EditorKey::Submit);
         assert_eq!(EDITOR.key(character("j"), ctrl), EditorKey::Submit);
     }
