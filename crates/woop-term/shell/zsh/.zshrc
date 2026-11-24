@@ -18,20 +18,21 @@ if [[ -z $__woop_integrated ]]; then
         __woop_status=$?
     }
 
-    # Percent-encodes $1, byte by byte, so that a directory cannot end or
-    # change the mark it is sent in.
+    # Percent-encodes $1, byte by byte, into REPLY, so that a directory
+    # cannot end or change the mark it is sent in. No subshell is needed:
+    # the locale set here is local to the function.
     __woop_encode() {
         emulate -L zsh
-        local LC_ALL=C text=$1 encoded= char
+        local LC_ALL=C text=$1 char
         local -i i
+        REPLY=
         for (( i = 1; i <= ${#text}; i++ )); do
             char=${text[i]}
             case $char in
-                [a-zA-Z0-9.~_/-]) encoded+=$char ;;
-                *) printf -v char '%%%02X' "'$char"; encoded+=$char ;;
+                [a-zA-Z0-9.~_/-]) REPLY+=$char ;;
+                *) printf -v char '%%%02X' "'$char"; REPLY+=$char ;;
             esac
         done
-        print -rn -- "$encoded"
     }
 
     __woop_precmd() {
@@ -41,7 +42,14 @@ if [[ -z $__woop_integrated ]]; then
         __woop_ran=
         # The current directory, so that new panes open here. Left out when
         # too long for the mark, which would then be dropped as a whole.
-        local directory=$(__woop_encode "$PWD")
+        # Encoded again only when it changed.
+        if [[ $PWD != "$__woop_pwd" ]]; then
+            __woop_pwd=$PWD
+            local REPLY
+            __woop_encode "$PWD"
+            __woop_directory=$REPLY
+        fi
+        local directory=$__woop_directory
         if (( ${#directory} > 3800 )); then
             directory=
         else

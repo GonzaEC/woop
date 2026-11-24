@@ -119,6 +119,9 @@ pub struct Pane {
     notice: Option<&'static str>,
     /// The keyboard shortcuts in effect (ADR 0021).
     bindings: Arc<Bindings>,
+    /// Output arrived while the pane was not shown: `screen` is out of date
+    /// until it is shown again.
+    stale: bool,
 }
 
 impl Pane {
@@ -144,6 +147,15 @@ impl Pane {
             panel_lines: 1,
             notice: None,
             bindings,
+            stale: false,
+        }
+    }
+
+    /// Brings the snapshot up to date if output arrived while the pane was
+    /// hidden; call it before the pane is drawn again.
+    pub fn show(&mut self) {
+        if self.stale {
+            self.refresh();
         }
     }
 
@@ -209,8 +221,10 @@ impl Pane {
     }
 
     /// Applies output the shell produced. Called when the session reports
-    /// output, also while the pane is not shown.
-    pub fn process_output(&mut self) -> Task<Message> {
+    /// output, also while the pane is not shown: the snapshot drawn from is
+    /// then only taken once it is `shown` again, since it costs far more than
+    /// a small update of the screen.
+    pub fn process_output(&mut self, shown: bool) -> Task<Message> {
         let was_active = self.editor_active();
         let events = match self.session.pump() {
             Ok(events) => events,
@@ -226,7 +240,11 @@ impl Pane {
                 TerminalEvent::Bell | TerminalEvent::Reply(_) => {}
             }
         }
-        self.refresh();
+        if shown {
+            self.refresh();
+        } else {
+            self.stale = true;
+        }
         self.after_change(Task::none(), was_active, false)
     }
 
@@ -238,9 +256,12 @@ impl Pane {
         was_active: bool,
         clicked: bool,
     ) -> Task<Message> {
+        // Read from the terminal, not the snapshot, which a hidden pane does
+        // not take.
+        let terminal = self.session.terminal();
         let turned_on = self
             .gate
-            .observe(self.screen.awaiting_command, self.screen.command_prompt);
+            .observe(terminal.awaiting_command(), terminal.command_prompt());
         if turned_on {
             self.integration = true;
             self.notice = None;
@@ -555,7 +576,9 @@ impl Pane {
             EditorKey::Submit => {
                 // Output may have moved the cursor since the editor turned
                 // on; if the shell's line might hold text, the user confirms.
-                if self.gate.submit(self.screen.awaiting_command) == gate::Submit::Confirm {
+                if self.gate.submit(self.session.terminal().awaiting_command())
+                    == gate::Submit::Confirm
+                {
                     return Task::none();
                 }
                 let text = self.editor.text();
@@ -706,6 +729,7 @@ impl Pane {
     }
 
     fn refresh(&mut self) {
+        self.stale = false;
         self.screen = Terminal::screen(self.session.terminal());
         self.cache.clear();
     }
