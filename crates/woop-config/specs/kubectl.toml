@@ -1,0 +1,424 @@
+# Subcommands and options of kubectl, for completion (ADR 0024).
+name = "kubectl"
+description = "Kubernetes command-line client"
+options = [
+  { names = ["-n", "--namespace"], description = "Namespace", args = "text", global = true },
+  { names = ["--context"], description = "Context from the kubeconfig", args = "text", global = true },
+  { names = ["--kubeconfig"], description = "kubeconfig file", args = "file", global = true },
+  { names = ["-h", "--help"], description = "Show help" },
+]
+
+[[subcommands]]
+name = "get"
+description = "Show resources"
+args = ["all", "pods", "po", "deployments", "deploy", "services", "svc", "nodes", "no", "namespaces", "ns", "configmaps", "cm", "secrets", "ingresses", "ing", "jobs", "cronjobs", "cj", "daemonsets", "ds", "statefulsets", "sts", "replicasets", "rs", "persistentvolumeclaims", "pvc", "persistentvolumes", "pv", "serviceaccounts", "sa", "events", "ev", "endpoints", "ep", "roles", "rolebindings", "clusterroles", "clusterrolebindings", "storageclasses", "sc", "horizontalpodautoscalers", "hpa", "networkpolicies", "netpol"]
+options = [
+  { names = ["-o", "--output"], description = "Output format", args = ["wide", "yaml", "json", "name", "jsonpath", "custom-columns"] },
+  { names = ["-A", "--all-namespaces"], description = "Every namespace" },
+  { names = ["-l", "--selector"], description = "Label selector", args = "text" },
+  { names = ["-w", "--watch"], description = "Watch for changes" },
+  { names = ["--show-labels"], description = "Show labels" },
+  { names = ["--field-selector"], description = "Field selector", args = "text" },
+  { names = ["--sort-by"], description = "Sort by a field", args = "text" },
+]
+
+[[subcommands]]
+name = "describe"
+description = "Show details of resources"
+args = ["pods", "po", "deployments", "deploy", "services", "svc", "nodes", "no", "namespaces", "ns", "configmaps", "cm", "secrets", "ingresses", "ing", "jobs", "cronjobs", "cj", "daemonsets", "ds", "statefulsets", "sts", "replicasets", "rs", "persistentvolumeclaims", "pvc", "persistentvolumes", "pv", "serviceaccounts", "sa"]
+options = [
+  { names = ["-A", "--all-namespaces"], description = "Every namespace" },
+  { names = ["-l", "--selector"], description = "Label selector", args = "text" },
+]
+
+[[subcommands]]
+name = "apply"
+description = "Apply a configuration"
+options = [
+  { names = ["-f", "--filename"], description = "File, directory or URL", args = "path" },
+  { names = ["-k", "--kustomize"], description = "Kustomization directory", args = "directory" },
+  { names = ["-R", "--recursive"], description = "Into subdirectories" },
+  { names = ["--dry-run"], description = "Only show what would change", args = ["none", "client", "server"] },
+  { names = ["--server-side"], description = "Apply on the server" },
+  { names = ["--prune"], description = "Delete resources no longer in the configuration" },
+]
+
+[[subcommands]]
+name = "delete"
+description = "Delete resources"
+args = ["pods", "po", "deployments", "deploy", "services", "svc", "namespaces", "ns", "configmaps", "cm", "secrets", "ingresses", "ing", "jobs", "cronjobs", "cj", "daemonsets", "ds", "statefulsets", "sts", "persistentvolumeclaims", "pvc"]
+options = [
+  { names = ["-f", "--filename"], description = "Resources from this file", args = "path" },
+  { names = ["-l", "--selector"], description = "Label selector", args = "text" },
+  { names = ["--all"], description = "Every resource of the type" },
+  { names = ["--force"], description = "Delete immediately" },
+  { names = ["--grace-period"], description = "Seconds to wait", args = "text" },
+]
+
+[[subcommands]]
+name = "create"
+description = "Create resources"
+options = [
+  { names = ["-f", "--filename"], description = "From this file", args = "path" },
+  { names = ["--dry-run"], description = "Only show what would be created", args = ["none", "client", "server"] },
+  { names = ["-o", "--output"], description = "Output format", args = ["yaml", "json", "name"] },
+]
+
+[[subcommands.subcommands]]
+name = "namespace"
+aliases = ["ns"]
+description = "Create a namespace"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "deployment"
+aliases = ["deploy"]
+description = "Create a deployment"
+args = "text"
+options = [
+  { names = ["--image"], description = "Container image", args = "text" },
+  { names = ["--replicas"], description = "Number of replicas", args = "text" },
+  { names = ["--port"], description = "Container port", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "secret"
+description = "Create a secret"
+
+[[subcommands.subcommands.subcommands]]
+name = "generic"
+description = "From files, directories or literal values"
+args = "text"
+options = [
+  { names = ["--from-literal"], description = "A key and value", args = "text" },
+  { names = ["--from-file"], description = "From a file", args = "path" },
+  { names = ["--from-env-file"], description = "From an environment file", args = "file" },
+]
+
+[[subcommands.subcommands.subcommands]]
+name = "docker-registry"
+description = "For a container registry"
+args = "text"
+
+[[subcommands.subcommands.subcommands]]
+name = "tls"
+description = "From a certificate and key"
+args = "text"
+options = [
+  { names = ["--cert"], description = "Certificate file", args = "file" },
+  { names = ["--key"], description = "Key file", args = "file" },
+]
+
+[[subcommands.subcommands]]
+name = "configmap"
+aliases = ["cm"]
+description = "Create a config map"
+args = "text"
+options = [
+  { names = ["--from-literal"], description = "A key and value", args = "text" },
+  { names = ["--from-file"], description = "From a file", args = "path" },
+]
+
+[[subcommands.subcommands]]
+name = "job"
+description = "Create a job"
+args = "text"
+options = [
+  { names = ["--image"], description = "Container image", args = "text" },
+  { names = ["--from"], description = "From a cron job", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "cronjob"
+aliases = ["cj"]
+description = "Create a cron job"
+args = "text"
+options = [
+  { names = ["--image"], description = "Container image", args = "text" },
+  { names = ["--schedule"], description = "Cron schedule", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "serviceaccount"
+aliases = ["sa"]
+description = "Create a service account"
+args = "text"
+
+[[subcommands]]
+name = "edit"
+description = "Edit a resource in an editor"
+args = ["pods", "deployments", "deploy", "services", "svc", "configmaps", "cm", "secrets", "ingresses", "ing", "jobs", "cronjobs", "daemonsets", "ds", "statefulsets", "sts"]
+
+[[subcommands]]
+name = "logs"
+description = "Show a container's logs"
+args = "text"
+options = [
+  { names = ["-f", "--follow"], description = "Keep following" },
+  { names = ["-c", "--container"], description = "Container", args = "text" },
+  { names = ["--tail"], description = "Only the last lines", args = "text" },
+  { names = ["-p", "--previous"], description = "The previous instance" },
+  { names = ["--since"], description = "Logs newer than this", args = "text" },
+  { names = ["--all-containers"], description = "Every container" },
+  { names = ["-l", "--selector"], description = "Label selector", args = "text" },
+  { names = ["--timestamps"], description = "Show times" },
+]
+
+[[subcommands]]
+name = "exec"
+description = "Run a command in a container"
+args = "text"
+options = [
+  { names = ["-i", "--stdin"], description = "Pass standard input" },
+  { names = ["-t", "--tty"], description = "Allocate a terminal" },
+  { names = ["-c", "--container"], description = "Container", args = "text" },
+]
+
+[[subcommands]]
+name = "port-forward"
+description = "Forward local ports to a pod"
+args = "text"
+options = [
+  { names = ["--address"], description = "Addresses to listen on", args = "text" },
+]
+
+[[subcommands]]
+name = "scale"
+description = "Set the number of replicas"
+args = ["deployments", "deploy", "statefulsets", "sts", "replicasets", "rs"]
+options = [
+  { names = ["--replicas"], description = "Number of replicas", args = "text" },
+]
+
+[[subcommands]]
+name = "rollout"
+description = "Manage rollouts"
+
+[[subcommands.subcommands]]
+name = "status"
+description = "Show a rollout's status"
+args = ["deployments", "deploy", "daemonsets", "ds", "statefulsets", "sts"]
+
+[[subcommands.subcommands]]
+name = "history"
+description = "Show past revisions"
+args = ["deployments", "deploy", "daemonsets", "ds", "statefulsets", "sts"]
+
+[[subcommands.subcommands]]
+name = "undo"
+description = "Go back to an earlier revision"
+args = ["deployments", "deploy", "daemonsets", "ds", "statefulsets", "sts"]
+options = [
+  { names = ["--to-revision"], description = "This revision", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "restart"
+description = "Restart a resource"
+args = ["deployments", "deploy", "daemonsets", "ds", "statefulsets", "sts"]
+
+[[subcommands.subcommands]]
+name = "pause"
+description = "Pause a rollout"
+args = ["deployments", "deploy"]
+
+[[subcommands.subcommands]]
+name = "resume"
+description = "Resume a rollout"
+args = ["deployments", "deploy"]
+
+[[subcommands]]
+name = "config"
+description = "Manage kubeconfig files"
+
+[[subcommands.subcommands]]
+name = "get-contexts"
+description = "List contexts"
+
+[[subcommands.subcommands]]
+name = "current-context"
+description = "Print the current context"
+
+[[subcommands.subcommands]]
+name = "use-context"
+description = "Switch to a context"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "set-context"
+description = "Change a context"
+args = "text"
+options = [
+  { names = ["--current"], description = "The current context" },
+  { names = ["--namespace"], description = "Its namespace", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "view"
+description = "Show the merged configuration"
+options = [
+  { names = ["--minify"], description = "Only the current context" },
+  { names = ["--raw"], description = "Include certificates and secrets" },
+]
+
+[[subcommands.subcommands]]
+name = "get-clusters"
+description = "List clusters"
+
+[[subcommands.subcommands]]
+name = "delete-context"
+description = "Remove a context"
+args = "text"
+
+[[subcommands]]
+name = "top"
+description = "Show resource use"
+
+[[subcommands.subcommands]]
+name = "pod"
+aliases = ["pods", "po"]
+description = "Of pods"
+args = "text"
+options = [
+  { names = ["-A", "--all-namespaces"], description = "Every namespace" },
+  { names = ["--containers"], description = "Per container" },
+]
+
+[[subcommands.subcommands]]
+name = "node"
+aliases = ["nodes", "no"]
+description = "Of nodes"
+args = "text"
+
+[[subcommands]]
+name = "run"
+description = "Run a pod from an image"
+args = "text"
+options = [
+  { names = ["--image"], description = "Container image", args = "text" },
+  { names = ["--rm"], description = "Delete it when it exits" },
+  { names = ["-i", "--stdin"], description = "Pass standard input" },
+  { names = ["-t", "--tty"], description = "Allocate a terminal" },
+  { names = ["--restart"], description = "Restart policy", args = ["Always", "OnFailure", "Never"] },
+  { names = ["--env"], description = "Set an environment variable", args = "text" },
+  { names = ["--port"], description = "Container port", args = "text" },
+]
+
+[[subcommands]]
+name = "expose"
+description = "Make a resource reachable as a service"
+args = ["deployments", "deploy", "pods", "po", "services", "svc", "replicasets", "rs"]
+options = [
+  { names = ["--port"], description = "Service port", args = "text" },
+  { names = ["--target-port"], description = "Container port", args = "text" },
+  { names = ["--type"], description = "Service type", args = ["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"] },
+]
+
+[[subcommands]]
+name = "label"
+description = "Change labels"
+args = "text"
+options = [
+  { names = ["--overwrite"], description = "Replace existing labels" },
+]
+
+[[subcommands]]
+name = "annotate"
+description = "Change annotations"
+args = "text"
+options = [
+  { names = ["--overwrite"], description = "Replace existing annotations" },
+]
+
+[[subcommands]]
+name = "patch"
+description = "Change fields of a resource"
+args = "text"
+options = [
+  { names = ["-p", "--patch"], description = "The patch", args = "text" },
+  { names = ["--type"], description = "Patch type", args = ["strategic", "merge", "json"] },
+]
+
+[[subcommands]]
+name = "cp"
+description = "Copy files to and from containers"
+args = "path"
+options = [
+  { names = ["-c", "--container"], description = "Container", args = "text" },
+]
+
+[[subcommands]]
+name = "diff"
+description = "Show what applying a configuration would change"
+options = [
+  { names = ["-f", "--filename"], description = "File or directory", args = "path" },
+]
+
+[[subcommands]]
+name = "wait"
+description = "Wait for a condition"
+args = "text"
+options = [
+  { names = ["--for"], description = "The condition", args = "text" },
+  { names = ["--timeout"], description = "How long to wait", args = "text" },
+]
+
+[[subcommands]]
+name = "drain"
+description = "Move workloads off a node"
+args = "text"
+options = [
+  { names = ["--ignore-daemonsets"], description = "Leave daemon set pods" },
+  { names = ["--delete-emptydir-data"], description = "Delete pods with local data" },
+]
+
+[[subcommands]]
+name = "cordon"
+description = "Stop scheduling on a node"
+args = "text"
+
+[[subcommands]]
+name = "uncordon"
+description = "Allow scheduling on a node again"
+args = "text"
+
+[[subcommands]]
+name = "taint"
+description = "Change a node's taints"
+args = "text"
+
+[[subcommands]]
+name = "auth"
+description = "Inspect authorisation"
+
+[[subcommands.subcommands]]
+name = "can-i"
+description = "Check whether an action is allowed"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "whoami"
+description = "Show the current user"
+
+[[subcommands]]
+name = "explain"
+description = "Show the fields of a resource type"
+args = "text"
+options = [
+  { names = ["--recursive"], description = "Every field" },
+]
+
+[[subcommands]]
+name = "api-resources"
+description = "List resource types"
+
+[[subcommands]]
+name = "cluster-info"
+description = "Show cluster addresses"
+
+[[subcommands]]
+name = "version"
+description = "Show versions"
+options = [
+  { names = ["--client"], description = "Only the client's" },
+]

@@ -7,9 +7,11 @@ mod editor;
 mod gate;
 mod history;
 mod keys;
+mod lookup;
 mod palette;
 mod pane;
 mod shell_history;
+mod specs;
 mod theme;
 mod view;
 
@@ -72,6 +74,9 @@ pub enum Message {
     PaletteClose,
     /// A shell's history file was read (ADR 0023).
     ShellHistory(shell_integration::Shell, Arc<[String]>),
+    /// The command specifications were read (ADR 0024), with the reasons
+    /// any of the user's files could not be used.
+    SpecsLoaded(Arc<specs::Specs>, Option<String>),
 }
 
 /// Most different font family names kept during one run (ADR 0020).
@@ -116,6 +121,10 @@ struct Woop {
     /// Why the configured shell could not start, shown while the default
     /// shell is used instead.
     shell_error: Option<String>,
+    /// Why some of the user's command specifications were not used.
+    spec_error: Option<String>,
+    /// The command specifications in effect (ADR 0024).
+    specs: Arc<specs::Specs>,
     /// Font family names given to iced, which keeps them for the whole
     /// program; each distinct name is kept once.
     font_names: Vec<&'static str>,
@@ -143,6 +152,8 @@ impl Woop {
             config: Config::default(),
             config_error: None,
             shell_error: None,
+            spec_error: None,
+            specs: specs::Specs::new(Vec::new()),
             font_names: Vec::new(),
             command_palette: None,
             palette_target: None,
@@ -239,7 +250,7 @@ impl Woop {
             Message::ListenerReady(sender) => {
                 if self.output.is_none() {
                     self.output = Some(sender);
-                    return self.new_tab();
+                    return Task::batch([self.load_specs(), self.new_tab()]);
                 }
             }
             Message::Output(id) => {
@@ -316,7 +327,10 @@ impl Woop {
                     return self.focus_current();
                 }
             }
-            Message::ConfigChanged => self.reload_config(),
+            Message::ConfigChanged => {
+                self.reload_config();
+                return self.load_specs();
+            }
             Message::PaletteKey(key, modifiers, text) => {
                 // The palette's own shortcut closes it again.
                 let toggle = keys::key_press(&key, modifiers, None, &self.idle_key_context())
@@ -342,6 +356,13 @@ impl Woop {
             }
             Message::PaletteClose => return self.close_palette(),
             Message::ShellHistory(shell, commands) => self.history.set_file(shell, commands),
+            Message::SpecsLoaded(specs, error) => {
+                self.spec_error = error;
+                for pane in self.panes.values_mut() {
+                    pane.set_specs(Arc::clone(&specs));
+                }
+                self.specs = specs;
+            }
         }
         Task::none()
     }
@@ -399,6 +420,9 @@ impl Woop {
             self.shell_error.as_ref().map(|error| {
                 format!("The configured shell could not start, the default shell is used: {error}")
             }),
+            self.spec_error
+                .as_ref()
+                .map(|error| format!("Some command specifications were not used: {error}")),
         ];
         for notice in notices.into_iter().flatten() {
             layout = layout.push(
@@ -510,7 +534,7 @@ impl Woop {
             },
             Command::ReloadConfig => {
                 self.reload_config();
-                Task::none()
+                self.load_specs()
             }
         };
         self.palette_target = None;
@@ -785,6 +809,7 @@ impl Woop {
                         self.metrics,
                         Arc::clone(&self.bindings),
                         shell,
+                        Arc::clone(&self.specs),
                     ),
                 );
                 Some((id, self.read_history(shell)))
@@ -794,6 +819,35 @@ impl Woop {
                 None
             }
         }
+    }
+
+    /// Reads the user's command specifications on a thread of its own and
+    /// puts them before the bundled ones (ADR 0024).
+    fn load_specs(&self) -> Task<Message> {
+        Task::perform(
+            async {
+                let (sender, receiver) = iced::futures::channel::oneshot::channel();
+                let started = std::thread::Builder::new()
+                    .name("woop-specs".to_owned())
+                    .spawn(move || {
+                        let (user, errors) = woop_config::spec::user_dir()
+                            .map(|dir| woop_config::spec::load_dir(&dir))
+                            .unwrap_or_default();
+                        let error = errors.first().map(|first| match errors.len() {
+                            1 => first.to_string(),
+                            more => format!("{first} (and {} more)", more - 1),
+                        });
+                        let _ = sender.send((specs::Specs::new(user), error));
+                    });
+                match started {
+                    Ok(_) => receiver
+                        .await
+                        .unwrap_or_else(|_| (specs::Specs::new(Vec::new()), None)),
+                    Err(error) => (specs::Specs::new(Vec::new()), Some(error.to_string())),
+                }
+            },
+            |(specs, error)| Message::SpecsLoaded(specs, error),
+        )
     }
 
     /// Reads `shell`'s history file on a thread of its own, once per window.

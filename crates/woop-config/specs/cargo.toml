@@ -1,0 +1,303 @@
+# Subcommands and options of cargo, for completion (ADR 0024).
+name = "cargo"
+description = "Rust package manager"
+options = [
+  { names = ["-V", "--version"], description = "Print the version" },
+  { names = ["--list"], description = "List installed commands" },
+  { names = ["-h", "--help"], description = "Show help" },
+  { names = ["-v", "--verbose"], description = "More output", global = true },
+  { names = ["-q", "--quiet"], description = "Less output", global = true },
+  { names = ["--color"], description = "When to use colours", args = ["auto", "always", "never"], global = true },
+  { names = ["--manifest-path"], description = "Path to Cargo.toml", args = "file", global = true },
+  { names = ["--offline"], description = "Do not use the network", global = true },
+  { names = ["--locked"], description = "Require Cargo.lock to stay unchanged", global = true },
+  { names = ["--frozen"], description = "Locked and offline", global = true },
+  { names = ["-Z"], description = "Unstable flags (nightly only)", args = "text", global = true },
+]
+
+[[subcommands]]
+name = "build"
+aliases = ["b"]
+description = "Compile the package"
+options = [
+  { names = ["-r", "--release"], description = "Optimised build" },
+  { names = ["-p", "--package"], description = "Only this package", args = "text" },
+  { names = ["--workspace"], description = "Every package of the workspace" },
+  { names = ["--target"], description = "Build for this target triple", args = "text" },
+  { names = ["-F", "--features"], description = "Features to enable", args = "text" },
+  { names = ["--all-features"], description = "Enable every feature" },
+  { names = ["--no-default-features"], description = "Disable the default features" },
+  { names = ["--bin"], description = "Only this binary", args = "text" },
+  { names = ["--example"], description = "Only this example", args = "text" },
+  { names = ["--lib"], description = "Only the library" },
+  { names = ["--all-targets"], description = "Every target" },
+  { names = ["--profile"], description = "Build with this profile", args = "text" },
+  { names = ["-j", "--jobs"], description = "Parallel jobs", args = "text" },
+  { names = ["--timings"], description = "Report how long each step took" },
+]
+
+[[subcommands]]
+name = "check"
+aliases = ["c"]
+description = "Check the package for errors without building it"
+options = [
+  { names = ["-r", "--release"], description = "Check the optimised build" },
+  { names = ["-p", "--package"], description = "Only this package", args = "text" },
+  { names = ["--workspace"], description = "Every package of the workspace" },
+  { names = ["--target"], description = "Check for this target triple", args = "text" },
+  { names = ["-F", "--features"], description = "Features to enable", args = "text" },
+  { names = ["--all-features"], description = "Enable every feature" },
+  { names = ["--no-default-features"], description = "Disable the default features" },
+  { names = ["--all-targets"], description = "Every target" },
+  { names = ["--tests"], description = "The tests" },
+]
+
+[[subcommands]]
+name = "clippy"
+description = "Check the package with Clippy's lints"
+options = [
+  { names = ["-p", "--package"], description = "Only this package", args = "text" },
+  { names = ["--workspace"], description = "Every package of the workspace" },
+  { names = ["--all-targets"], description = "Every target" },
+  { names = ["--all-features"], description = "Enable every feature" },
+  { names = ["--fix"], description = "Apply the suggestions" },
+  { names = ["--allow-dirty"], description = "Fix even with uncommitted changes" },
+]
+
+[[subcommands]]
+name = "run"
+aliases = ["r"]
+description = "Build and run a binary"
+args = "text"
+options = [
+  { names = ["-r", "--release"], description = "Optimised build" },
+  { names = ["-p", "--package"], description = "From this package", args = "text" },
+  { names = ["--bin"], description = "This binary", args = "text" },
+  { names = ["--example"], description = "This example", args = "text" },
+  { names = ["-F", "--features"], description = "Features to enable", args = "text" },
+  { names = ["--all-features"], description = "Enable every feature" },
+  { names = ["--target"], description = "Build for this target triple", args = "text" },
+  { names = ["--profile"], description = "Build with this profile", args = "text" },
+]
+
+[[subcommands]]
+name = "test"
+aliases = ["t"]
+description = "Run the tests"
+args = "text"
+options = [
+  { names = ["-r", "--release"], description = "Optimised build" },
+  { names = ["-p", "--package"], description = "Only this package", args = "text" },
+  { names = ["--workspace"], description = "Every package of the workspace" },
+  { names = ["--lib"], description = "Only the library's tests" },
+  { names = ["--doc"], description = "Only the documentation tests" },
+  { names = ["--test"], description = "Only this integration test", args = "text" },
+  { names = ["--bin"], description = "Only this binary's tests", args = "text" },
+  { names = ["--no-fail-fast"], description = "Run every test even after a failure" },
+  { names = ["--no-run"], description = "Build the tests without running them" },
+  { names = ["-F", "--features"], description = "Features to enable", args = "text" },
+  { names = ["--all-features"], description = "Enable every feature" },
+  { names = ["--all-targets"], description = "Every target" },
+]
+
+[[subcommands]]
+name = "bench"
+description = "Run the benchmarks"
+args = "text"
+options = [
+  { names = ["-p", "--package"], description = "Only this package", args = "text" },
+  { names = ["--bench"], description = "Only this benchmark", args = "text" },
+  { names = ["--no-run"], description = "Build without running" },
+]
+
+[[subcommands]]
+name = "fmt"
+description = "Format the code"
+options = [
+  { names = ["--all"], description = "Every package" },
+  { names = ["--check"], description = "Only report unformatted code" },
+  { names = ["-p", "--package"], description = "Only this package", args = "text" },
+]
+
+[[subcommands]]
+name = "doc"
+aliases = ["d"]
+description = "Build the documentation"
+options = [
+  { names = ["--open"], description = "Open it in a browser" },
+  { names = ["--no-deps"], description = "Not the dependencies" },
+  { names = ["-p", "--package"], description = "Only this package", args = "text" },
+  { names = ["--document-private-items"], description = "Include private items" },
+]
+
+[[subcommands]]
+name = "new"
+description = "Create a package in a new directory"
+args = "directory"
+options = [
+  { names = ["--lib"], description = "A library" },
+  { names = ["--bin"], description = "A binary" },
+  { names = ["--name"], description = "The package's name", args = "text" },
+  { names = ["--edition"], description = "The Rust edition", args = ["2015", "2018", "2021", "2024"] },
+  { names = ["--vcs"], description = "Version control to set up", args = ["git", "hg", "pijul", "fossil", "none"] },
+]
+
+[[subcommands]]
+name = "init"
+description = "Create a package in an existing directory"
+args = "directory"
+options = [
+  { names = ["--lib"], description = "A library" },
+  { names = ["--bin"], description = "A binary" },
+  { names = ["--name"], description = "The package's name", args = "text" },
+  { names = ["--edition"], description = "The Rust edition", args = ["2015", "2018", "2021", "2024"] },
+]
+
+[[subcommands]]
+name = "add"
+description = "Add dependencies to Cargo.toml"
+args = "text"
+options = [
+  { names = ["--dev"], description = "As a development dependency" },
+  { names = ["--build"], description = "As a build dependency" },
+  { names = ["-F", "--features"], description = "Features to enable", args = "text" },
+  { names = ["--no-default-features"], description = "Disable its default features" },
+  { names = ["--optional"], description = "As an optional dependency" },
+  { names = ["-p", "--package"], description = "To this package", args = "text" },
+  { names = ["--path"], description = "A local dependency", args = "directory" },
+  { names = ["--git"], description = "A dependency from a git repository", args = "text" },
+  { names = ["--dry-run"], description = "Show what would change" },
+]
+
+[[subcommands]]
+name = "remove"
+aliases = ["rm"]
+description = "Remove dependencies from Cargo.toml"
+args = "text"
+options = [
+  { names = ["--dev"], description = "A development dependency" },
+  { names = ["--build"], description = "A build dependency" },
+  { names = ["-p", "--package"], description = "From this package", args = "text" },
+]
+
+[[subcommands]]
+name = "update"
+description = "Update dependencies in Cargo.lock"
+args = "text"
+options = [
+  { names = ["-p", "--package"], description = "Only this dependency", args = "text" },
+  { names = ["--precise"], description = "To exactly this version", args = "text" },
+  { names = ["--recursive"], description = "Its dependencies too" },
+  { names = ["-n", "--dry-run"], description = "Show what would change" },
+]
+
+[[subcommands]]
+name = "install"
+description = "Install a binary"
+args = "text"
+options = [
+  { names = ["--path"], description = "From a local package", args = "directory" },
+  { names = ["--git"], description = "From a git repository", args = "text" },
+  { names = ["--version"], description = "This version", args = "text" },
+  { names = ["-f", "--force"], description = "Replace an installed one" },
+  { names = ["--root"], description = "Install under this directory", args = "directory" },
+  { names = ["--list"], description = "List installed binaries" },
+]
+
+[[subcommands]]
+name = "uninstall"
+description = "Remove an installed binary"
+args = "text"
+
+[[subcommands]]
+name = "clean"
+description = "Remove build output"
+options = [
+  { names = ["-r", "--release"], description = "Only the optimised build" },
+  { names = ["-p", "--package"], description = "Only this package", args = "text" },
+  { names = ["--doc"], description = "Only the documentation" },
+  { names = ["-n", "--dry-run"], description = "Show what would be removed" },
+]
+
+[[subcommands]]
+name = "tree"
+description = "Show the dependency graph"
+options = [
+  { names = ["-p", "--package"], description = "For this package", args = "text" },
+  { names = ["-i", "--invert"], description = "Who depends on this package", args = "text" },
+  { names = ["-e", "--edges"], description = "Kinds of dependency shown", args = ["normal", "build", "dev", "all", "features", "no-dev"] },
+  { names = ["--depth"], description = "How deep to go", args = "text" },
+  { names = ["-d", "--duplicates"], description = "Packages present in several versions" },
+]
+
+[[subcommands]]
+name = "search"
+description = "Search registry packages"
+args = "text"
+options = [
+  { names = ["--limit"], description = "Most results", args = "text" },
+]
+
+[[subcommands]]
+name = "publish"
+description = "Upload the package to a registry"
+options = [
+  { names = ["-n", "--dry-run"], description = "Check without uploading" },
+  { names = ["--allow-dirty"], description = "Allow uncommitted changes" },
+  { names = ["-p", "--package"], description = "This package", args = "text" },
+]
+
+[[subcommands]]
+name = "package"
+description = "Assemble the package into a distributable file"
+options = [
+  { names = ["--list"], description = "List the files included" },
+  { names = ["--allow-dirty"], description = "Allow uncommitted changes" },
+]
+
+[[subcommands]]
+name = "fix"
+description = "Apply the compiler's suggestions"
+options = [
+  { names = ["--edition"], description = "Migrate to the next edition" },
+  { names = ["--allow-dirty"], description = "Fix even with uncommitted changes" },
+]
+
+[[subcommands]]
+name = "metadata"
+description = "Print the workspace's metadata as JSON"
+options = [
+  { names = ["--format-version"], description = "Format version", args = ["1"] },
+  { names = ["--no-deps"], description = "Without dependencies" },
+]
+
+[[subcommands]]
+name = "vendor"
+description = "Copy every dependency into the project"
+args = "directory"
+
+[[subcommands]]
+name = "generate-lockfile"
+description = "Write Cargo.lock"
+
+[[subcommands]]
+name = "locate-project"
+description = "Print the path of Cargo.toml"
+
+[[subcommands]]
+name = "login"
+description = "Save a registry token"
+
+[[subcommands]]
+name = "yank"
+description = "Withdraw a published version"
+args = "text"
+options = [
+  { names = ["--version"], description = "The version", args = "text" },
+  { names = ["--undo"], description = "Restore it" },
+]
+
+[[subcommands]]
+name = "help"
+description = "Show help for a subcommand"
+args = ["build", "check", "clippy", "run", "test", "bench", "fmt", "doc", "new", "init", "add", "remove", "update", "install", "uninstall", "clean", "tree", "search", "publish", "package", "fix", "metadata", "vendor", "yank"]

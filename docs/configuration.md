@@ -60,3 +60,39 @@ On macOS and Linux, Woop ignores the file if other users could change it or the 
 Command blocks and the command editor need Woop's shell integration, which loads only with shell arguments known not to keep it from running: `-NoLogo` and `-NoProfile` for PowerShell, `-i` for bash, `-i`, `-l` and `--login` for zsh and fish. With any other argument (a login bash, `-Command`, `-c`), the shell starts without it, as in a plain terminal.
 
 The decisions behind this are in [ADR 0020](adr/0020-toml-configuration.md).
+
+## Completion specifications
+
+Tab in the command editor completes the subcommands, options and arguments of commands that have a specification. Woop includes specifications for `git`, `cargo`, `rustup`, `npm`, `docker`, `kubectl`, `ssh`, `scp`, `gh` and `pip`. You can add your own, or replace an included one, with TOML files in the `completions` directory next to `config.toml`. A file whose `name` matches an included specification replaces it. Woop reads them when it starts and when you reload the configuration.
+
+```toml
+# completions/deploy.toml
+name = "deploy"
+aliases = ["dp"]
+description = "Deploy the site"
+options = [
+  { names = ["-v", "--verbose"], description = "More output", global = true },
+  { names = ["-c", "--config"], description = "Configuration file", args = "file" },
+]
+
+[[subcommands]]
+name = "push"
+description = "Upload a build"
+args = ["staging", "production"]
+
+[[subcommands]]
+name = "rollback"
+description = "Go back to a release"
+args = "git-tag"
+```
+
+- `name`, `aliases`, `description`: the command, its other names, and what the list shows next to it. Names are single words.
+- `options`: each with its spellings in `names`, a `description`, an optional `args` for the value it takes as the next word, and `global = true` if it also applies after the subcommands.
+- `subcommands`: nested commands, with the same fields; nest them with `[[subcommands.subcommands]]`.
+- `args`: what the arguments are. It is either a list of values or one of these kinds:
+  - `path`, `file` or `directory`;
+  - `text`: nothing to complete;
+  - `git-branch`, `git-tag`, `git-ref` or `git-remote`: read from the files of the git repository the shell is in;
+  - `ssh-host`: the hosts named in `~/.ssh/config`.
+
+A specification only describes a command; Woop never runs anything to complete it. Values are read from files, without running git. A file that cannot be used is reported and skipped, and the others still apply. Like `config.toml`, these files are ignored on macOS and Linux if other users could change them or the directory they are in. See [ADR 0024](adr/0024-command-specifications.md).

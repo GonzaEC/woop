@@ -1,0 +1,20 @@
+# Options of scp, for completion (ADR 0024).
+name = "scp"
+description = "Copy files over SSH"
+args = "path"
+options = [
+  { names = ["-r"], description = "Copy directories recursively" },
+  { names = ["-P"], description = "Port", args = "text" },
+  { names = ["-i"], description = "Identity (private key) file", args = "file" },
+  { names = ["-F"], description = "Configuration file", args = "file" },
+  { names = ["-J"], description = "Connect through this jump host", args = "ssh-host" },
+  { names = ["-o"], description = "Set a configuration option", args = "text" },
+  { names = ["-l"], description = "Limit the bandwidth (Kbit/s)", args = "text" },
+  { names = ["-p"], description = "Keep times and modes" },
+  { names = ["-C"], description = "Compress" },
+  { names = ["-q"], description = "Quiet" },
+  { names = ["-v"], description = "Verbose" },
+  { names = ["-3"], description = "Copy between two remote hosts through this one" },
+  { names = ["-4"], description = "IPv4 only" },
+  { names = ["-6"], description = "IPv6 only" },
+]

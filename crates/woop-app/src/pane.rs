@@ -13,11 +13,15 @@ use woop_term::{
 use woop_term::shell_integration::Shell;
 
 use crate::bindings::Bindings;
+use woop_config::spec::Arg;
+
 use crate::completion;
 use crate::editor;
 use crate::gate::{self, Consumed, Gate};
 use crate::history::History;
 use crate::keys::{self, EditorKey, KeyAction};
+use crate::lookup;
+use crate::specs::{self, Specs};
 use crate::theme::Palette;
 use crate::view::{Metrics, TerminalView};
 
@@ -146,6 +150,8 @@ pub struct Pane {
     /// A directory listing is running. Only one runs at a time, so a hung
     /// file system blocks one thread, not one per Tab.
     listing: bool,
+    /// The command specifications in effect (ADR 0024).
+    specs: Arc<Specs>,
 }
 
 /// A completion waiting for its directory listing.
@@ -156,9 +162,33 @@ struct Pending {
     text: String,
     cursor: text_editor::Position,
     path: completion::PathRequest,
+    /// Completions known without reading anything (subcommands, options).
+    known: Vec<completion::Candidate>,
+    /// What the listing is for.
+    want: Want,
     history: Vec<completion::Candidate>,
     /// When Tab was pressed.
     asked: std::time::Instant,
+}
+
+/// What a listing is turned into.
+#[derive(Debug, Clone, Copy)]
+enum Want {
+    /// Paths, possibly only directories.
+    Paths { only_directories: bool },
+    /// Plain names (git refs, SSH hosts).
+    Names,
+}
+
+/// What is read off the interface thread for a completion.
+#[derive(Debug)]
+enum Lookup {
+    /// A directory's entries.
+    Directory(std::path::PathBuf),
+    /// Names of the git repository containing this directory.
+    Git(std::path::PathBuf, lookup::GitNames),
+    /// Hosts from the SSH configuration under this home directory.
+    SshHosts(std::path::PathBuf),
 }
 
 impl Pane {
@@ -170,6 +200,7 @@ impl Pane {
         metrics: Metrics,
         bindings: Arc<Bindings>,
         shell: Option<Shell>,
+        specs: Arc<Specs>,
     ) -> Self {
         Self {
             id,
@@ -191,7 +222,13 @@ impl Pane {
             pending: None,
             requests: 0,
             listing: false,
+            specs,
         }
+    }
+
+    /// Uses new command specifications, after they were read again.
+    pub fn set_specs(&mut self, specs: Arc<Specs>) {
+        self.specs = specs;
     }
 
     /// Brings the snapshot up to date if output arrived while the pane was
@@ -750,6 +787,7 @@ impl Pane {
         } else {
             Vec::new()
         };
+        let words = completion::words_before(&line, position.column, shell);
         let path = completion::PathRequest {
             line: position.line,
             word: completion::word_before(&line, position.column, shell),
@@ -762,25 +800,22 @@ impl Pane {
                 '/'
             },
         };
-        let directory = (cursor.selection.is_none() && completes_paths(&line, &path))
-            .then(|| {
-                let (dir, _) = completion::split_path(&path.word.value, shell);
-                let cwd = self
-                    .session
-                    .terminal()
-                    .current_directory()
-                    .map(std::path::PathBuf::from);
-                completion::directory_to_list(
-                    dir,
-                    path.word.tilde,
-                    cwd.as_deref(),
-                    home_directory().as_deref(),
-                    shell,
-                )
-            })
+        let free = cursor.selection.is_none();
+        // An argument of a command with a specification (ADR 0024);
+        // otherwise a path, except for the command itself.
+        let spec = (free && words.len() >= 2)
+            .then(|| self.specs.find(&words[0].value, cfg!(windows)))
             .flatten();
-        let Some(directory) = directory else {
-            return self.offer(Vec::new(), commands, &path, false, history);
+        let (known, lookup) = match spec {
+            Some(spec) => {
+                let suggestion = specs::suggest(spec, &words, &path);
+                (suggestion.candidates, suggestion.lookup)
+            }
+            None if free && completes_paths(&line, &path) => (Vec::new(), Some(Arg::Path)),
+            None => (Vec::new(), None),
+        };
+        let Some((job, want)) = lookup.and_then(|arg| self.lookup_for(&arg, &path)) else {
+            return self.offer(known, commands, &path, false, history);
         };
         if self.listing {
             // The last listing has not returned (a slow or hung file
@@ -795,12 +830,49 @@ impl Pane {
             text,
             cursor: position,
             path,
+            known,
+            want,
             history: commands,
             asked: std::time::Instant::now(),
         });
-        Task::perform(list_off_thread(directory), move |entries| {
+        Task::perform(lookup_off_thread(job), move |entries| {
             Message::Listed(id, entries)
         })
+    }
+
+    /// What to read, off the interface thread, for an argument of kind
+    /// `arg`; `None` when it cannot be known (no reported directory).
+    fn lookup_for(&self, arg: &Arg, path: &completion::PathRequest) -> Option<(Lookup, Want)> {
+        let cwd = self
+            .session
+            .terminal()
+            .current_directory()
+            .map(std::path::PathBuf::from)
+            .filter(|cwd| cwd.is_absolute());
+        let git = |names| Some((Lookup::Git(cwd.clone()?, names), Want::Names));
+        match arg {
+            Arg::Path | Arg::File | Arg::Directory => {
+                let (dir, _) = completion::split_path(&path.word.value, path.shell);
+                let directory = completion::directory_to_list(
+                    dir,
+                    path.word.tilde,
+                    cwd.as_deref(),
+                    home_directory().as_deref(),
+                    path.shell,
+                )?;
+                let only_directories = *arg == Arg::Directory;
+                Some((
+                    Lookup::Directory(directory),
+                    Want::Paths { only_directories },
+                ))
+            }
+            Arg::GitBranch => git(lookup::GitNames::Branches),
+            Arg::GitTag => git(lookup::GitNames::Tags),
+            Arg::GitRef => git(lookup::GitNames::Refs),
+            Arg::GitRemote => git(lookup::GitNames::Remotes),
+            Arg::SshHost => Some((Lookup::SshHosts(home_directory()?), Want::Names)),
+            Arg::Text | Arg::Values(_) => None,
+        }
     }
 
     /// A listing arrived: offers its completions if the editor still holds
@@ -823,11 +895,26 @@ impl Pane {
         let Some(pending) = self.pending.take().filter(|_| current) else {
             return Task::none();
         };
-        let paths = completion::path_candidates(&pending.path, entries);
+        let found = match pending.want {
+            Want::Paths { only_directories } => {
+                let mut paths = completion::path_candidates(&pending.path, entries);
+                if only_directories {
+                    paths.retain(|candidate| candidate.kind == completion::Kind::Directory);
+                }
+                paths
+            }
+            Want::Names => completion::word_candidates(
+                &pending.path,
+                entries.iter().map(|entry| entry.name.as_str()),
+                completion::Kind::Value,
+            ),
+        };
+        let mut candidates = pending.known;
+        candidates.extend(found);
         // The user may have moved on, about to press Enter: a late result
         // opens the list instead of changing the line.
         let late = pending.asked.elapsed() > LATE_LISTING;
-        self.offer(paths, pending.history, &pending.path, late, history)
+        self.offer(candidates, pending.history, &pending.path, late, history)
     }
 
     /// Inserts the only completion, or opens the list; with none, hands
@@ -1032,14 +1119,28 @@ fn home_directory() -> Option<std::path::PathBuf> {
         .filter(|home| home.is_absolute())
 }
 
-/// Lists `directory` on a thread of its own, so that a slow or hung file
-/// system never blocks the window (ADR 0023).
-async fn list_off_thread(directory: std::path::PathBuf) -> Arc<[completion::Entry]> {
+/// Reads what `lookup` asks for on a thread of its own, so that a slow or
+/// hung file system never blocks the window (ADR 0023, 0024).
+async fn lookup_off_thread(lookup: Lookup) -> Arc<[completion::Entry]> {
+    let names = |names: Vec<String>| {
+        names
+            .into_iter()
+            .map(|name| completion::Entry {
+                name,
+                is_dir: false,
+            })
+            .collect()
+    };
     let (sender, receiver) = iced::futures::channel::oneshot::channel();
     let started = std::thread::Builder::new()
         .name("woop-completion".to_owned())
         .spawn(move || {
-            let _ = sender.send(completion::list_directory(&directory));
+            let entries = match lookup {
+                Lookup::Directory(directory) => completion::list_directory(&directory),
+                Lookup::Git(start, which) => names(lookup::git_names(&start, which)),
+                Lookup::SshHosts(home) => names(lookup::ssh_hosts(&home)),
+            };
+            let _ = sender.send(entries);
         });
     if started.is_err() {
         return Arc::from([]);

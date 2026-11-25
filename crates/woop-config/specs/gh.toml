@@ -1,0 +1,549 @@
+# Subcommands and options of the GitHub command-line client, for
+# completion (ADR 0024).
+name = "gh"
+description = "GitHub command-line client"
+options = [
+  { names = ["--version"], description = "Print the version" },
+  { names = ["-h", "--help"], description = "Show help", global = true },
+]
+
+[[subcommands]]
+name = "auth"
+description = "Sign in and out"
+
+[[subcommands.subcommands]]
+name = "login"
+description = "Sign in"
+options = [
+  { names = ["-h", "--hostname"], description = "Host to sign in to", args = "text" },
+  { names = ["-w", "--web"], description = "Sign in with a browser" },
+  { names = ["-s", "--scopes"], description = "Extra scopes", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "logout"
+description = "Sign out"
+
+[[subcommands.subcommands]]
+name = "status"
+description = "Show the sign-in state"
+
+[[subcommands.subcommands]]
+name = "refresh"
+description = "Refresh the stored credentials"
+
+[[subcommands.subcommands]]
+name = "switch"
+description = "Switch accounts"
+
+[[subcommands]]
+name = "repo"
+description = "Work with repositories"
+
+[[subcommands.subcommands]]
+name = "clone"
+description = "Clone a repository"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "create"
+description = "Create a repository"
+args = "text"
+options = [
+  { names = ["--public"], description = "Public" },
+  { names = ["--private"], description = "Private" },
+  { names = ["--internal"], description = "Internal" },
+  { names = ["-s", "--source"], description = "From a local directory", args = "directory" },
+  { names = ["--push"], description = "Push the local commits" },
+  { names = ["-d", "--description"], description = "Description", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "fork"
+description = "Fork a repository"
+args = "text"
+options = [
+  { names = ["--clone"], description = "Clone the fork" },
+]
+
+[[subcommands.subcommands]]
+name = "view"
+description = "Show a repository"
+args = "text"
+options = [
+  { names = ["-w", "--web"], description = "Open it in a browser" },
+]
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List repositories"
+args = "text"
+options = [
+  { names = ["-L", "--limit"], description = "Most results", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "sync"
+description = "Bring a fork or local copy up to date"
+
+[[subcommands.subcommands]]
+name = "edit"
+description = "Change a repository's settings"
+
+[[subcommands.subcommands]]
+name = "set-default"
+description = "Choose the repository used here"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "rename"
+description = "Rename a repository"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "archive"
+description = "Archive a repository"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "delete"
+description = "Delete a repository"
+args = "text"
+
+[[subcommands]]
+name = "pr"
+description = "Work with pull requests"
+options = [
+  { names = ["-R", "--repo"], description = "Repository (owner/name)", args = "text", global = true },
+]
+
+[[subcommands.subcommands]]
+name = "create"
+description = "Open a pull request"
+options = [
+  { names = ["-t", "--title"], description = "Title", args = "text" },
+  { names = ["-b", "--body"], description = "Description", args = "text" },
+  { names = ["-F", "--body-file"], description = "Description from a file", args = "file" },
+  { names = ["-B", "--base"], description = "Branch to merge into", args = "git-branch" },
+  { names = ["-H", "--head"], description = "Branch with the changes", args = "git-branch" },
+  { names = ["-d", "--draft"], description = "As a draft" },
+  { names = ["-f", "--fill"], description = "Title and description from the commits" },
+  { names = ["-w", "--web"], description = "Open it in a browser" },
+  { names = ["-r", "--reviewer"], description = "Request a review", args = "text" },
+  { names = ["-a", "--assignee"], description = "Assign someone", args = "text" },
+  { names = ["-l", "--label"], description = "Add a label", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List pull requests"
+options = [
+  { names = ["-s", "--state"], description = "State", args = ["open", "closed", "merged", "all"] },
+  { names = ["-L", "--limit"], description = "Most results", args = "text" },
+  { names = ["-A", "--author"], description = "By this author", args = "text" },
+  { names = ["-B", "--base"], description = "Into this branch", args = "git-branch" },
+  { names = ["-l", "--label"], description = "With this label", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "view"
+description = "Show a pull request"
+args = "text"
+options = [
+  { names = ["-w", "--web"], description = "Open it in a browser" },
+  { names = ["-c", "--comments"], description = "Show comments" },
+]
+
+[[subcommands.subcommands]]
+name = "checkout"
+aliases = ["co"]
+description = "Check out a pull request's branch"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "merge"
+description = "Merge a pull request"
+args = "text"
+options = [
+  { names = ["-s", "--squash"], description = "Squash the commits" },
+  { names = ["-m", "--merge"], description = "Make a merge commit" },
+  { names = ["-r", "--rebase"], description = "Rebase the commits" },
+  { names = ["-d", "--delete-branch"], description = "Delete the branch afterwards" },
+  { names = ["--auto"], description = "Merge once the checks pass" },
+]
+
+[[subcommands.subcommands]]
+name = "checks"
+description = "Show the checks of a pull request"
+args = "text"
+options = [
+  { names = ["--watch"], description = "Wait until they finish" },
+]
+
+[[subcommands.subcommands]]
+name = "diff"
+description = "Show a pull request's changes"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "review"
+description = "Review a pull request"
+args = "text"
+options = [
+  { names = ["-a", "--approve"], description = "Approve it" },
+  { names = ["-r", "--request-changes"], description = "Ask for changes" },
+  { names = ["-c", "--comment"], description = "Comment" },
+  { names = ["-b", "--body"], description = "Review text", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "comment"
+description = "Comment on a pull request"
+args = "text"
+options = [
+  { names = ["-b", "--body"], description = "Comment text", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "edit"
+description = "Change a pull request"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "ready"
+description = "Mark a draft as ready for review"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "close"
+description = "Close a pull request"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "reopen"
+description = "Reopen a pull request"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "status"
+description = "Show pull requests relevant to you"
+
+[[subcommands]]
+name = "issue"
+description = "Work with issues"
+options = [
+  { names = ["-R", "--repo"], description = "Repository (owner/name)", args = "text", global = true },
+]
+
+[[subcommands.subcommands]]
+name = "create"
+description = "Open an issue"
+options = [
+  { names = ["-t", "--title"], description = "Title", args = "text" },
+  { names = ["-b", "--body"], description = "Description", args = "text" },
+  { names = ["-l", "--label"], description = "Add a label", args = "text" },
+  { names = ["-a", "--assignee"], description = "Assign someone", args = "text" },
+  { names = ["-w", "--web"], description = "Open it in a browser" },
+]
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List issues"
+options = [
+  { names = ["-s", "--state"], description = "State", args = ["open", "closed", "all"] },
+  { names = ["-L", "--limit"], description = "Most results", args = "text" },
+  { names = ["-l", "--label"], description = "With this label", args = "text" },
+  { names = ["-a", "--assignee"], description = "Assigned to someone", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "view"
+description = "Show an issue"
+args = "text"
+options = [
+  { names = ["-w", "--web"], description = "Open it in a browser" },
+  { names = ["-c", "--comments"], description = "Show comments" },
+]
+
+[[subcommands.subcommands]]
+name = "comment"
+description = "Comment on an issue"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "close"
+description = "Close an issue"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "reopen"
+description = "Reopen an issue"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "edit"
+description = "Change an issue"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "status"
+description = "Show issues relevant to you"
+
+[[subcommands]]
+name = "run"
+description = "Work with workflow runs"
+options = [
+  { names = ["-R", "--repo"], description = "Repository (owner/name)", args = "text", global = true },
+]
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List recent runs"
+options = [
+  { names = ["-b", "--branch"], description = "On this branch", args = "git-branch" },
+  { names = ["-L", "--limit"], description = "Most results", args = "text" },
+  { names = ["-w", "--workflow"], description = "Of this workflow", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "view"
+description = "Show a run"
+args = "text"
+options = [
+  { names = ["--log"], description = "Show the full log" },
+  { names = ["--log-failed"], description = "Show the log of failed steps" },
+  { names = ["-j", "--job"], description = "Only this job", args = "text" },
+  { names = ["-w", "--web"], description = "Open it in a browser" },
+]
+
+[[subcommands.subcommands]]
+name = "watch"
+description = "Follow a run until it finishes"
+args = "text"
+options = [
+  { names = ["--exit-status"], description = "Fail if the run fails" },
+]
+
+[[subcommands.subcommands]]
+name = "rerun"
+description = "Run again"
+args = "text"
+options = [
+  { names = ["--failed"], description = "Only the failed jobs" },
+]
+
+[[subcommands.subcommands]]
+name = "cancel"
+description = "Cancel a run"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "download"
+description = "Download a run's artifacts"
+args = "text"
+
+[[subcommands]]
+name = "workflow"
+description = "Work with workflows"
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List workflows"
+
+[[subcommands.subcommands]]
+name = "view"
+description = "Show a workflow"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "run"
+description = "Start a workflow"
+args = "text"
+options = [
+  { names = ["-r", "--ref"], description = "On this branch or tag", args = "git-ref" },
+  { names = ["-f", "--raw-field"], description = "An input", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "enable"
+description = "Enable a workflow"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "disable"
+description = "Disable a workflow"
+args = "text"
+
+[[subcommands]]
+name = "release"
+description = "Work with releases"
+
+[[subcommands.subcommands]]
+name = "create"
+description = "Create a release"
+args = "git-tag"
+options = [
+  { names = ["-t", "--title"], description = "Title", args = "text" },
+  { names = ["-n", "--notes"], description = "Release notes", args = "text" },
+  { names = ["--generate-notes"], description = "Write notes from the changes" },
+  { names = ["-d", "--draft"], description = "As a draft" },
+  { names = ["-p", "--prerelease"], description = "As a prerelease" },
+]
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List releases"
+
+[[subcommands.subcommands]]
+name = "view"
+description = "Show a release"
+args = "git-tag"
+
+[[subcommands.subcommands]]
+name = "download"
+description = "Download a release's files"
+args = "git-tag"
+
+[[subcommands.subcommands]]
+name = "upload"
+description = "Add files to a release"
+args = "path"
+
+[[subcommands.subcommands]]
+name = "edit"
+description = "Change a release"
+args = "git-tag"
+
+[[subcommands.subcommands]]
+name = "delete"
+description = "Delete a release"
+args = "git-tag"
+
+[[subcommands]]
+name = "gist"
+description = "Work with gists"
+
+[[subcommands.subcommands]]
+name = "create"
+description = "Create a gist"
+args = "file"
+options = [
+  { names = ["-p", "--public"], description = "Public" },
+  { names = ["-d", "--desc"], description = "Description", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List gists"
+
+[[subcommands.subcommands]]
+name = "view"
+description = "Show a gist"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "edit"
+description = "Change a gist"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "delete"
+description = "Delete a gist"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "clone"
+description = "Clone a gist"
+args = "text"
+
+[[subcommands]]
+name = "api"
+description = "Make an API request"
+args = "text"
+options = [
+  { names = ["-X", "--method"], description = "HTTP method", args = ["GET", "POST", "PUT", "PATCH", "DELETE"] },
+  { names = ["-f", "--raw-field"], description = "A string field", args = "text" },
+  { names = ["-F", "--field"], description = "A typed field", args = "text" },
+  { names = ["-H", "--header"], description = "A request header", args = "text" },
+  { names = ["--paginate"], description = "Fetch every page" },
+  { names = ["-q", "--jq"], description = "Filter the response", args = "text" },
+]
+
+[[subcommands]]
+name = "search"
+description = "Search GitHub"
+
+[[subcommands.subcommands]]
+name = "repos"
+description = "Search repositories"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "issues"
+description = "Search issues"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "prs"
+description = "Search pull requests"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "code"
+description = "Search code"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "commits"
+description = "Search commits"
+args = "text"
+
+[[subcommands]]
+name = "browse"
+description = "Open the repository in a browser"
+args = "path"
+
+[[subcommands]]
+name = "status"
+description = "Show what needs your attention"
+
+[[subcommands]]
+name = "config"
+description = "Manage the client's configuration"
+
+[[subcommands.subcommands]]
+name = "get"
+description = "Print a value"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "set"
+description = "Set a value"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List the configuration"
+
+[[subcommands]]
+name = "extension"
+description = "Manage extensions"
+
+[[subcommands.subcommands]]
+name = "install"
+description = "Install an extension"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List installed extensions"
+
+[[subcommands.subcommands]]
+name = "remove"
+description = "Remove an extension"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "upgrade"
+description = "Upgrade extensions"
+args = "text"

@@ -25,6 +25,13 @@ pub enum Kind {
     File,
     /// A command from the history.
     History,
+    /// A subcommand, from a command specification (ADR 0024).
+    Subcommand,
+    /// An option, from a command specification.
+    Option,
+    /// A value for an argument: one listed in a specification, or a git
+    /// ref or SSH host read from files.
+    Value,
 }
 
 /// One completion: the text that replaces part of the editor's line.
@@ -34,6 +41,10 @@ pub struct Candidate {
     pub kind: Kind,
     /// What the list shows.
     pub label: String,
+    /// What it does, from a specification; empty otherwise.
+    pub description: String,
+    /// The word inserted, before quoting.
+    pub stem: String,
     /// The text inserted, already quoted for the shell.
     pub text: String,
     /// What it replaces.
@@ -72,6 +83,19 @@ pub struct Word {
 /// quoting rules. Words are separated by spaces and by `;|&<>()` outside
 /// quotes.
 pub fn word_before(line: &str, cursor: usize, shell: Shell) -> Word {
+    words_before(line, cursor, shell)
+        .pop()
+        .unwrap_or_else(|| Word {
+            start: 0,
+            value: String::new(),
+            tilde: false,
+        })
+}
+
+/// Reads the words of the command that ends at byte `cursor` of `line`:
+/// those after the last `;|&<>()` outside quotes. The last one is the word
+/// at the cursor, empty after a space.
+pub fn words_before(line: &str, cursor: usize, shell: Shell) -> Vec<Word> {
     #[derive(Clone, Copy, PartialEq)]
     enum Quote {
         None,
@@ -89,17 +113,28 @@ pub fn word_before(line: &str, cursor: usize, shell: Shell) -> Word {
         value: String::new(),
         tilde: false,
     };
+    let mut words = Vec::new();
     let mut quote = Quote::None;
     let mut chars = text.char_indices().peekable();
     while let Some((index, ch)) = chars.next() {
         match quote {
             Quote::None => match ch {
                 ' ' | '\t' | ';' | '|' | '&' | '<' | '>' | '(' | ')' => {
-                    word = Word {
+                    let next = Word {
                         start: index + ch.len_utf8(),
                         value: String::new(),
                         tilde: false,
                     };
+                    let finished = std::mem::replace(&mut word, next);
+                    if matches!(ch, ' ' | '\t') {
+                        // Something, even empty quotes, since the last space.
+                        if index > finished.start {
+                            words.push(finished);
+                        }
+                    } else {
+                        // A new command starts.
+                        words.clear();
+                    }
                 }
                 ch if is_single_quote(ch, shell) => quote = Quote::Single,
                 ch if is_double_quote(ch, shell) => quote = Quote::Double,
@@ -170,7 +205,8 @@ pub fn word_before(line: &str, cursor: usize, shell: Shell) -> Word {
             },
         }
     }
-    word
+    words.push(word);
+    words
 }
 
 /// Characters that start or end a single-quoted string in `shell`:
@@ -404,17 +440,54 @@ pub fn path_candidates(request: &PathRequest, entries: &[Entry]) -> Vec<Candidat
                     Kind::File
                 },
                 label,
+                description: String::new(),
                 text: quote(&value, request.word.tilde, request.shell),
+                stem: value,
                 span: request.span(),
             }
         })
         .collect()
 }
 
-/// When every candidate is a path and their names share a beginning longer
-/// than what was typed, the completion that inserts that beginning.
+/// Words from `names` (sorted, without repeats) that complete the
+/// request's word, as completions of `kind` with no description.
+pub fn word_candidates<'a>(
+    request: &PathRequest,
+    names: impl IntoIterator<Item = &'a str>,
+    kind: Kind,
+) -> Vec<Candidate> {
+    let prefix = request.word.value.as_str();
+    let mut matching: Vec<&str> = names
+        .into_iter()
+        .filter(|name| name.starts_with(prefix))
+        .collect();
+    matching.sort_unstable();
+    matching.dedup();
+    matching
+        .into_iter()
+        .take(MAX_CANDIDATES)
+        .map(|name| request.candidate(kind, name, name, ""))
+        .collect()
+}
+
+impl PathRequest {
+    /// A completion that replaces the word with `stem`, quoted.
+    pub fn candidate(&self, kind: Kind, label: &str, stem: &str, description: &str) -> Candidate {
+        Candidate {
+            kind,
+            label: label.to_owned(),
+            description: description.to_owned(),
+            stem: stem.to_owned(),
+            text: quote(stem, self.word.tilde && stem.starts_with('~'), self.shell),
+            span: self.span(),
+        }
+    }
+}
+
+/// When no candidate comes from the history and their words share a
+/// beginning longer than what was typed, the completion that inserts that
+/// beginning.
 pub fn common_beginning(request: &PathRequest, candidates: &[Candidate]) -> Option<Candidate> {
-    let (dir, prefix) = request.parts();
     let first = candidates.first()?;
     if candidates
         .iter()
@@ -422,29 +495,23 @@ pub fn common_beginning(request: &PathRequest, candidates: &[Candidate]) -> Opti
     {
         return None;
     }
-    let mut common: &str = &first.label;
+    let mut common: &str = &first.stem;
     for candidate in &candidates[1..] {
         let shared = common
             .char_indices()
-            .zip(candidate.label.chars())
+            .zip(candidate.stem.chars())
             .find(|((_, a), b)| a != b)
-            .map_or(
-                common.len().min(candidate.label.len()),
-                |((index, _), _)| index,
-            );
+            .map_or(common.len().min(candidate.stem.len()), |((index, _), _)| {
+                index
+            });
         common = &common[..shared];
     }
     // Typed in another case, the shared beginning only counts if it is
-    // longer than the prefix.
-    if common.chars().count() <= prefix.chars().count() {
+    // longer than what was typed.
+    if common.chars().count() <= request.word.value.chars().count() {
         return None;
     }
-    Some(Candidate {
-        kind: Kind::File,
-        label: common.to_owned(),
-        text: quote(&format!("{dir}{common}"), request.word.tilde, request.shell),
-        span: request.span(),
-    })
+    Some(request.candidate(Kind::File, common, common, ""))
 }
 
 /// Commands from `history` (newest first) that start with `text` and are
@@ -461,6 +528,8 @@ pub fn history_candidates<'a>(
         .map(|command| Candidate {
             kind: Kind::History,
             label: command.replace('\n', " \u{21b5} "),
+            description: String::new(),
+            stem: command.to_owned(),
             text: command.to_owned(),
             span: Span::All,
         })

@@ -1,0 +1,168 @@
+# Subcommands and options of rustup, for completion (ADR 0024).
+name = "rustup"
+description = "Rust toolchain installer"
+options = [
+  { names = ["-V", "--version"], description = "Print the version" },
+  { names = ["-h", "--help"], description = "Show help" },
+  { names = ["-v", "--verbose"], description = "More output", global = true },
+  { names = ["-q", "--quiet"], description = "Less output", global = true },
+]
+
+[[subcommands]]
+name = "show"
+description = "Show the installed and active toolchains"
+
+[[subcommands.subcommands]]
+name = "active-toolchain"
+description = "Show the active toolchain"
+
+[[subcommands.subcommands]]
+name = "home"
+description = "Show rustup's home directory"
+
+[[subcommands]]
+name = "update"
+description = "Update toolchains and rustup"
+args = "text"
+options = [
+  { names = ["--no-self-update"], description = "Do not update rustup itself" },
+  { names = ["--force"], description = "Update even if components are missing" },
+]
+
+[[subcommands]]
+name = "default"
+description = "Set the default toolchain"
+args = ["stable", "beta", "nightly"]
+
+[[subcommands]]
+name = "toolchain"
+description = "Manage toolchains"
+
+[[subcommands.subcommands]]
+name = "install"
+description = "Install a toolchain"
+args = ["stable", "beta", "nightly"]
+options = [
+  { names = ["--profile"], description = "Components to install", args = ["minimal", "default", "complete"] },
+  { names = ["-c", "--component"], description = "Also install this component", args = "text" },
+  { names = ["-t", "--target"], description = "Also install this target", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "uninstall"
+description = "Remove a toolchain"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List installed toolchains"
+
+[[subcommands.subcommands]]
+name = "link"
+description = "Use a custom toolchain from a directory"
+args = "text"
+
+[[subcommands]]
+name = "target"
+description = "Manage targets for cross-compiling"
+options = [
+  { names = ["--toolchain"], description = "For this toolchain", args = "text", global = true },
+]
+
+[[subcommands.subcommands]]
+name = "add"
+description = "Install a target"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "remove"
+description = "Remove a target"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List targets"
+options = [
+  { names = ["--installed"], description = "Only installed ones" },
+]
+
+[[subcommands]]
+name = "component"
+description = "Manage toolchain components"
+options = [
+  { names = ["--toolchain"], description = "For this toolchain", args = "text", global = true },
+]
+
+[[subcommands.subcommands]]
+name = "add"
+description = "Install a component"
+args = ["clippy", "rustfmt", "rust-src", "rust-analyzer", "llvm-tools", "rust-docs", "miri"]
+
+[[subcommands.subcommands]]
+name = "remove"
+description = "Remove a component"
+args = ["clippy", "rustfmt", "rust-src", "rust-analyzer", "llvm-tools", "rust-docs", "miri"]
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List components"
+options = [
+  { names = ["--installed"], description = "Only installed ones" },
+]
+
+[[subcommands]]
+name = "override"
+description = "Use a toolchain for a directory"
+
+[[subcommands.subcommands]]
+name = "set"
+description = "Use a toolchain here"
+args = ["stable", "beta", "nightly"]
+
+[[subcommands.subcommands]]
+name = "unset"
+description = "Stop using an override here"
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List overrides"
+
+[[subcommands]]
+name = "run"
+description = "Run a command with a toolchain"
+args = ["stable", "beta", "nightly"]
+
+[[subcommands]]
+name = "which"
+description = "Show which binary a command runs"
+args = "text"
+
+[[subcommands]]
+name = "doc"
+description = "Open the local documentation"
+options = [
+  { names = ["--book"], description = "The book" },
+  { names = ["--std"], description = "The standard library" },
+  { names = ["--reference"], description = "The reference" },
+]
+
+[[subcommands]]
+name = "self"
+description = "Manage rustup itself"
+
+[[subcommands.subcommands]]
+name = "update"
+description = "Update rustup"
+
+[[subcommands.subcommands]]
+name = "uninstall"
+description = "Remove rustup and every toolchain"
+
+[[subcommands]]
+name = "check"
+description = "Check for updates"
+
+[[subcommands]]
+name = "completions"
+description = "Print shell completions"
+args = ["bash", "zsh", "fish", "powershell", "elvish"]

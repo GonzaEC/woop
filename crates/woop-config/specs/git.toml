@@ -1,0 +1,545 @@
+# Subcommands and options of git, for completion (ADR 0024).
+name = "git"
+description = "Distributed version control"
+options = [
+  { names = ["-C"], description = "Run as if started in this directory", args = "directory" },
+  { names = ["-c"], description = "Set a configuration value for this run", args = "text" },
+  { names = ["--version"], description = "Print the version" },
+  { names = ["-h", "--help"], description = "Show help" },
+  { names = ["--no-pager"], description = "Do not page the output" },
+]
+
+[[subcommands]]
+name = "add"
+description = "Add file contents to the index"
+args = "path"
+options = [
+  { names = ["-A", "--all"], description = "Add changes from all tracked and untracked files" },
+  { names = ["-p", "--patch"], description = "Choose hunks interactively" },
+  { names = ["-u", "--update"], description = "Add changes to tracked files only" },
+  { names = ["-n", "--dry-run"], description = "Show what would be added" },
+  { names = ["-f", "--force"], description = "Add ignored files too" },
+  { names = ["-N", "--intent-to-add"], description = "Record that the path will be added later" },
+]
+
+[[subcommands]]
+name = "apply"
+description = "Apply a patch to files or the index"
+args = "file"
+options = [
+  { names = ["--check"], description = "Only check whether the patch applies" },
+  { names = ["--index"], description = "Also apply it to the index" },
+  { names = ["-R", "--reverse"], description = "Apply the patch in reverse" },
+  { names = ["--3way"], description = "Fall back to a three-way merge" },
+]
+
+[[subcommands]]
+name = "bisect"
+description = "Find the commit that introduced a bug by binary search"
+
+[[subcommands.subcommands]]
+name = "start"
+description = "Start bisecting"
+args = "git-ref"
+
+[[subcommands.subcommands]]
+name = "good"
+description = "Mark a commit as good"
+args = "git-ref"
+
+[[subcommands.subcommands]]
+name = "bad"
+description = "Mark a commit as bad"
+args = "git-ref"
+
+[[subcommands.subcommands]]
+name = "skip"
+description = "Skip a commit that cannot be tested"
+args = "git-ref"
+
+[[subcommands.subcommands]]
+name = "reset"
+description = "End bisecting and go back"
+args = "git-ref"
+
+[[subcommands.subcommands]]
+name = "log"
+description = "Show what was marked so far"
+
+[[subcommands]]
+name = "blame"
+description = "Show who last changed each line of a file"
+args = "file"
+options = [
+  { names = ["-L"], description = "Only these lines (start,end)", args = "text" },
+  { names = ["-w"], description = "Ignore whitespace changes" },
+  { names = ["-C"], description = "Detect lines moved or copied from other files" },
+]
+
+[[subcommands]]
+name = "branch"
+description = "List, create or delete branches"
+args = "git-branch"
+options = [
+  { names = ["-a", "--all"], description = "List local and remote branches" },
+  { names = ["-r", "--remotes"], description = "List remote branches" },
+  { names = ["-v", "--verbose"], description = "Show the last commit of each branch" },
+  { names = ["-d", "--delete"], description = "Delete a merged branch" },
+  { names = ["-D"], description = "Delete a branch, merged or not" },
+  { names = ["-m", "--move"], description = "Rename a branch" },
+  { names = ["-c", "--copy"], description = "Copy a branch" },
+  { names = ["-u", "--set-upstream-to"], description = "Set the branch's upstream", args = "git-ref" },
+  { names = ["--unset-upstream"], description = "Remove the branch's upstream" },
+  { names = ["--show-current"], description = "Print the current branch" },
+  { names = ["--merged"], description = "Only branches merged into this commit", args = "git-ref" },
+  { names = ["--no-merged"], description = "Only branches not merged into this commit", args = "git-ref" },
+]
+
+[[subcommands]]
+name = "checkout"
+description = "Switch branches or restore files"
+args = "git-ref"
+options = [
+  { names = ["-b"], description = "Create a branch and switch to it", args = "text" },
+  { names = ["-B"], description = "Create or reset a branch and switch to it", args = "text" },
+  { names = ["-t", "--track"], description = "Track the remote branch" },
+  { names = ["-f", "--force"], description = "Discard local changes" },
+  { names = ["--orphan"], description = "Start a branch without history", args = "text" },
+  { names = ["--detach"], description = "Detach HEAD at the commit" },
+]
+
+[[subcommands]]
+name = "cherry-pick"
+description = "Apply the changes of existing commits"
+args = "git-ref"
+options = [
+  { names = ["-n", "--no-commit"], description = "Apply without committing" },
+  { names = ["-x"], description = "Record where the commit came from" },
+  { names = ["--continue"], description = "Continue after resolving conflicts" },
+  { names = ["--abort"], description = "Cancel and go back" },
+  { names = ["--skip"], description = "Skip the current commit" },
+]
+
+[[subcommands]]
+name = "clean"
+description = "Remove untracked files"
+args = "path"
+options = [
+  { names = ["-n", "--dry-run"], description = "Show what would be removed" },
+  { names = ["-f", "--force"], description = "Remove them" },
+  { names = ["-d"], description = "Remove untracked directories too" },
+  { names = ["-x"], description = "Remove ignored files too" },
+  { names = ["-i", "--interactive"], description = "Choose interactively" },
+]
+
+[[subcommands]]
+name = "clone"
+description = "Copy a repository into a new directory"
+args = "text"
+options = [
+  { names = ["-b", "--branch"], description = "Check out this branch", args = "text" },
+  { names = ["--depth"], description = "Only the last commits", args = "text" },
+  { names = ["--recurse-submodules"], description = "Clone submodules too" },
+  { names = ["--bare"], description = "Make a bare repository" },
+  { names = ["--single-branch"], description = "Only one branch" },
+  { names = ["-o", "--origin"], description = "Name of the remote", args = "text" },
+]
+
+[[subcommands]]
+name = "commit"
+description = "Record changes to the repository"
+args = "path"
+options = [
+  { names = ["-m", "--message"], description = "Use this message", args = "text" },
+  { names = ["-a", "--all"], description = "Include changes to all tracked files" },
+  { names = ["--amend"], description = "Replace the last commit" },
+  { names = ["--no-edit"], description = "Keep the message" },
+  { names = ["-s", "--signoff"], description = "Add a Signed-off-by line" },
+  { names = ["-S", "--gpg-sign"], description = "Sign the commit" },
+  { names = ["-v", "--verbose"], description = "Show the diff in the message editor" },
+  { names = ["--fixup"], description = "Make a fixup commit for a commit", args = "git-ref" },
+  { names = ["--allow-empty"], description = "Allow a commit without changes" },
+  { names = ["-F", "--file"], description = "Take the message from a file", args = "file" },
+]
+
+[[subcommands]]
+name = "config"
+description = "Read and write configuration"
+args = "text"
+options = [
+  { names = ["--global"], description = "The user's configuration" },
+  { names = ["--local"], description = "The repository's configuration" },
+  { names = ["--system"], description = "The system's configuration" },
+  { names = ["-l", "--list"], description = "List all values" },
+  { names = ["--get"], description = "Print a value", args = "text" },
+  { names = ["--unset"], description = "Remove a value", args = "text" },
+  { names = ["-e", "--edit"], description = "Open the configuration in an editor" },
+]
+
+[[subcommands]]
+name = "diff"
+description = "Show changes"
+args = "path"
+options = [
+  { names = ["--staged", "--cached"], description = "Changes in the index" },
+  { names = ["--stat"], description = "Only a summary per file" },
+  { names = ["--name-only"], description = "Only the names of changed files" },
+  { names = ["--name-status"], description = "Names and kind of change" },
+  { names = ["--word-diff"], description = "Show changed words" },
+  { names = ["--check"], description = "Warn about whitespace errors" },
+]
+
+[[subcommands]]
+name = "fetch"
+description = "Download objects and refs from a remote"
+args = "git-remote"
+options = [
+  { names = ["--all"], description = "Fetch all remotes" },
+  { names = ["-p", "--prune"], description = "Remove refs that no longer exist on the remote" },
+  { names = ["-t", "--tags"], description = "Fetch all tags" },
+  { names = ["--depth"], description = "Only the last commits", args = "text" },
+  { names = ["--unshallow"], description = "Fetch the full history" },
+]
+
+[[subcommands]]
+name = "grep"
+description = "Search tracked files"
+args = "text"
+options = [
+  { names = ["-n", "--line-number"], description = "Show line numbers" },
+  { names = ["-i", "--ignore-case"], description = "Ignore case" },
+  { names = ["-w", "--word-regexp"], description = "Match whole words" },
+  { names = ["-l", "--files-with-matches"], description = "Only file names" },
+  { names = ["-e"], description = "The pattern", args = "text" },
+]
+
+[[subcommands]]
+name = "init"
+description = "Create an empty repository"
+args = "directory"
+options = [
+  { names = ["--bare"], description = "Make a bare repository" },
+  { names = ["-b", "--initial-branch"], description = "Name of the first branch", args = "text" },
+]
+
+[[subcommands]]
+name = "log"
+description = "Show commit history"
+args = "git-ref"
+options = [
+  { names = ["--oneline"], description = "One line per commit" },
+  { names = ["--graph"], description = "Draw the history as a graph" },
+  { names = ["--all"], description = "All refs" },
+  { names = ["-n", "--max-count"], description = "At most this many commits", args = "text" },
+  { names = ["-p", "--patch"], description = "Show each commit's changes" },
+  { names = ["--stat"], description = "Show a summary of changes" },
+  { names = ["--author"], description = "Commits by this author", args = "text" },
+  { names = ["--since"], description = "Commits after this date", args = "text" },
+  { names = ["--until"], description = "Commits before this date", args = "text" },
+  { names = ["--grep"], description = "Commits whose message matches", args = "text" },
+  { names = ["--follow"], description = "Follow a file across renames" },
+  { names = ["--decorate"], description = "Show ref names" },
+]
+
+[[subcommands]]
+name = "merge"
+description = "Join histories"
+args = "git-ref"
+options = [
+  { names = ["--no-ff"], description = "Always make a merge commit" },
+  { names = ["--ff-only"], description = "Only fast-forward" },
+  { names = ["--squash"], description = "Combine the changes without a merge commit" },
+  { names = ["-m"], description = "Merge commit message", args = "text" },
+  { names = ["--abort"], description = "Cancel and go back" },
+  { names = ["--continue"], description = "Continue after resolving conflicts" },
+]
+
+[[subcommands]]
+name = "mv"
+description = "Move or rename a tracked file"
+args = "path"
+options = [
+  { names = ["-f", "--force"], description = "Overwrite the destination" },
+  { names = ["-n", "--dry-run"], description = "Show what would be moved" },
+]
+
+[[subcommands]]
+name = "pull"
+description = "Fetch and integrate changes from a remote"
+args = "git-remote"
+options = [
+  { names = ["-r", "--rebase"], description = "Rebase instead of merging" },
+  { names = ["--no-rebase"], description = "Merge" },
+  { names = ["--ff-only"], description = "Only fast-forward" },
+  { names = ["--all"], description = "Fetch all remotes" },
+  { names = ["--autostash"], description = "Stash local changes during the pull" },
+]
+
+[[subcommands]]
+name = "push"
+description = "Update a remote with local commits"
+args = "git-remote"
+options = [
+  { names = ["-u", "--set-upstream"], description = "Make the remote branch the upstream" },
+  { names = ["-f", "--force"], description = "Overwrite the remote branch" },
+  { names = ["--force-with-lease"], description = "Overwrite only if nobody else pushed" },
+  { names = ["--tags"], description = "Push all tags" },
+  { names = ["-d", "--delete"], description = "Delete the remote ref" },
+  { names = ["--all"], description = "Push all branches" },
+  { names = ["-n", "--dry-run"], description = "Show what would be pushed" },
+  { names = ["--no-verify"], description = "Skip the pre-push hook" },
+]
+
+[[subcommands]]
+name = "rebase"
+description = "Reapply commits on top of another base"
+args = "git-ref"
+options = [
+  { names = ["-i", "--interactive"], description = "Edit the list of commits" },
+  { names = ["--onto"], description = "The new base", args = "git-ref" },
+  { names = ["--continue"], description = "Continue after resolving conflicts" },
+  { names = ["--abort"], description = "Cancel and go back" },
+  { names = ["--skip"], description = "Skip the current commit" },
+  { names = ["--autosquash"], description = "Move fixup commits into place" },
+  { names = ["--autostash"], description = "Stash local changes during the rebase" },
+]
+
+[[subcommands]]
+name = "reflog"
+description = "Show where refs have pointed"
+args = "git-ref"
+
+[[subcommands]]
+name = "remote"
+description = "Manage remotes"
+options = [
+  { names = ["-v", "--verbose"], description = "Show the URLs" },
+]
+
+[[subcommands.subcommands]]
+name = "add"
+description = "Add a remote"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "remove"
+aliases = ["rm"]
+description = "Remove a remote"
+args = "git-remote"
+
+[[subcommands.subcommands]]
+name = "rename"
+description = "Rename a remote"
+args = "git-remote"
+
+[[subcommands.subcommands]]
+name = "set-url"
+description = "Change a remote's URL"
+args = "git-remote"
+
+[[subcommands.subcommands]]
+name = "show"
+description = "Show a remote"
+args = "git-remote"
+
+[[subcommands.subcommands]]
+name = "prune"
+description = "Remove refs that no longer exist on the remote"
+args = "git-remote"
+
+[[subcommands]]
+name = "reset"
+description = "Move HEAD and reset the index or files"
+args = "git-ref"
+options = [
+  { names = ["--soft"], description = "Keep the index and files" },
+  { names = ["--mixed"], description = "Reset the index, keep files" },
+  { names = ["--hard"], description = "Reset the index and files" },
+  { names = ["--keep"], description = "Reset, keeping local changes" },
+]
+
+[[subcommands]]
+name = "restore"
+description = "Restore files"
+args = "path"
+options = [
+  { names = ["-s", "--source"], description = "Restore from this commit", args = "git-ref" },
+  { names = ["-S", "--staged"], description = "Restore the index" },
+  { names = ["-W", "--worktree"], description = "Restore the files" },
+  { names = ["-p", "--patch"], description = "Choose hunks interactively" },
+]
+
+[[subcommands]]
+name = "revert"
+description = "Make commits that undo earlier ones"
+args = "git-ref"
+options = [
+  { names = ["-n", "--no-commit"], description = "Undo without committing" },
+  { names = ["--no-edit"], description = "Keep the generated message" },
+  { names = ["--continue"], description = "Continue after resolving conflicts" },
+  { names = ["--abort"], description = "Cancel and go back" },
+]
+
+[[subcommands]]
+name = "rm"
+description = "Remove files from the working tree and the index"
+args = "path"
+options = [
+  { names = ["--cached"], description = "Only from the index" },
+  { names = ["-r"], description = "Remove directories recursively" },
+  { names = ["-f", "--force"], description = "Remove modified files too" },
+  { names = ["-n", "--dry-run"], description = "Show what would be removed" },
+]
+
+[[subcommands]]
+name = "show"
+description = "Show a commit or other object"
+args = "git-ref"
+options = [
+  { names = ["--stat"], description = "Only a summary of changes" },
+  { names = ["--name-only"], description = "Only the names of changed files" },
+]
+
+[[subcommands]]
+name = "stash"
+description = "Put changes aside"
+
+[[subcommands.subcommands]]
+name = "push"
+description = "Stash the current changes"
+args = "path"
+options = [
+  { names = ["-m", "--message"], description = "Describe the stash", args = "text" },
+  { names = ["-u", "--include-untracked"], description = "Include untracked files" },
+  { names = ["-k", "--keep-index"], description = "Leave the index as it is" },
+]
+
+[[subcommands.subcommands]]
+name = "pop"
+description = "Apply the latest stash and remove it"
+
+[[subcommands.subcommands]]
+name = "apply"
+description = "Apply a stash and keep it"
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List stashes"
+
+[[subcommands.subcommands]]
+name = "show"
+description = "Show a stash's changes"
+
+[[subcommands.subcommands]]
+name = "drop"
+description = "Remove a stash"
+
+[[subcommands.subcommands]]
+name = "clear"
+description = "Remove all stashes"
+
+[[subcommands.subcommands]]
+name = "branch"
+description = "Make a branch from a stash"
+args = "text"
+
+[[subcommands]]
+name = "status"
+description = "Show the state of the working tree"
+args = "path"
+options = [
+  { names = ["-s", "--short"], description = "Short format" },
+  { names = ["-b", "--branch"], description = "Show the branch" },
+  { names = ["--ignored"], description = "Show ignored files" },
+]
+
+[[subcommands]]
+name = "submodule"
+description = "Manage submodules"
+
+[[subcommands.subcommands]]
+name = "add"
+description = "Add a submodule"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "update"
+description = "Check out the recorded commits"
+args = "path"
+options = [
+  { names = ["--init"], description = "Initialise submodules first" },
+  { names = ["--recursive"], description = "Into nested submodules too" },
+  { names = ["--remote"], description = "Use the remote's latest commit" },
+]
+
+[[subcommands.subcommands]]
+name = "status"
+description = "Show the submodules' state"
+
+[[subcommands.subcommands]]
+name = "init"
+description = "Initialise submodules"
+
+[[subcommands.subcommands]]
+name = "sync"
+description = "Update the submodules' URLs"
+
+[[subcommands.subcommands]]
+name = "foreach"
+description = "Run a command in each submodule"
+args = "text"
+
+[[subcommands]]
+name = "switch"
+description = "Switch branches"
+args = "git-branch"
+options = [
+  { names = ["-c", "--create"], description = "Create a branch and switch to it", args = "text" },
+  { names = ["-C", "--force-create"], description = "Create or reset a branch and switch to it", args = "text" },
+  { names = ["-d", "--detach"], description = "Detach HEAD at the commit" },
+  { names = ["--orphan"], description = "Start a branch without history", args = "text" },
+  { names = ["-f", "--force", "--discard-changes"], description = "Discard local changes" },
+]
+
+[[subcommands]]
+name = "tag"
+description = "List, create or delete tags"
+args = "git-tag"
+options = [
+  { names = ["-a", "--annotate"], description = "Make an annotated tag" },
+  { names = ["-m", "--message"], description = "Use this message", args = "text" },
+  { names = ["-d", "--delete"], description = "Delete tags" },
+  { names = ["-l", "--list"], description = "List tags" },
+  { names = ["-f", "--force"], description = "Replace an existing tag" },
+  { names = ["-s", "--sign"], description = "Make a signed tag" },
+]
+
+[[subcommands]]
+name = "worktree"
+description = "Manage working trees"
+
+[[subcommands.subcommands]]
+name = "add"
+description = "Add a working tree"
+args = "directory"
+options = [
+  { names = ["-b"], description = "Create a branch for it", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List working trees"
+
+[[subcommands.subcommands]]
+name = "remove"
+description = "Remove a working tree"
+args = "directory"
+
+[[subcommands.subcommands]]
+name = "move"
+description = "Move a working tree"
+args = "directory"
+
+[[subcommands.subcommands]]
+name = "prune"
+description = "Forget working trees that no longer exist"
