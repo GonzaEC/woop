@@ -82,6 +82,9 @@ pub fn git_names(start: &Path, which: GitNames) -> Vec<String> {
     {
         names.extend(remotes(&config));
     }
+    // Names git itself could not have, such as `//host/share`, are not
+    // offered: a later Tab could otherwise list that path.
+    names.retain(|name| is_ref_name(name));
     clean(names)
 }
 
@@ -91,6 +94,9 @@ pub fn git_names(start: &Path, which: GitNames) -> Vec<String> {
 fn git_dir(start: &Path) -> Option<PathBuf> {
     for dir in start.ancestors().take(MAX_PARENTS) {
         let dot_git = dir.join(".git");
+        if !may_follow(&dot_git) {
+            continue;
+        }
         let Ok(metadata) = std::fs::metadata(&dot_git) else {
             continue;
         };
@@ -127,6 +133,38 @@ fn local_join(base: &Path, target: &str) -> Option<PathBuf> {
     local.then(|| base.join(path))
 }
 
+/// Whether a repository file may be opened through `path`. On Windows a
+/// symbolic link or junction is never followed: one pointing at
+/// `\\host\share` would connect to that host and offer the user's
+/// credentials when a Tab reads the repository.
+#[cfg(windows)]
+fn may_follow(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.file_type().is_symlink())
+}
+
+/// Whether a repository file may be opened through `path`.
+#[cfg(not(windows))]
+fn may_follow(_path: &Path) -> bool {
+    true
+}
+
+/// Whether git could have a ref with this name (the main rules of
+/// `git check-ref-format`): no `\`, `..`, `//`, `@{`, spaces or `:?*[~^`,
+/// no leading or trailing `/`, no trailing `.` or `.lock`.
+pub(crate) fn is_ref_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "@"
+        && !name.starts_with('/')
+        && !name.ends_with('/')
+        && !name.ends_with('.')
+        && !name.ends_with(".lock")
+        && !name.contains("..")
+        && !name.contains("//")
+        && !name.contains("@{")
+        && !name.contains(['\\', ':', '?', '*', '[', '~', '^'])
+        && !name.split('/').any(|part| part.starts_with('.'))
+}
+
 /// Most entries visited under the ref directories of one lookup, files and
 /// directories alike, so that a tree of empty directories cannot keep the
 /// thread busy.
@@ -135,7 +173,7 @@ const MAX_VISITS: usize = 50_000;
 /// Adds the names of the ref files under `dir`, as `prefix/name`, visiting
 /// at most `budget` more entries.
 fn list_refs(dir: &Path, prefix: &str, depth: usize, names: &mut Vec<String>, budget: &mut usize) {
-    if depth > MAX_REF_DEPTH || names.len() >= MAX_NAMES || *budget == 0 {
+    if depth > MAX_REF_DEPTH || names.len() >= MAX_NAMES || *budget == 0 || !may_follow(dir) {
         return;
     }
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -165,7 +203,7 @@ fn list_refs(dir: &Path, prefix: &str, depth: usize, names: &mut Vec<String>, bu
 }
 
 /// Branch and tag names from a `packed-refs` file.
-fn packed_refs(text: &str, branches: bool, tags: bool) -> Vec<String> {
+pub(crate) fn packed_refs(text: &str, branches: bool, tags: bool) -> Vec<String> {
     text.lines()
         .filter(|line| !line.starts_with('#') && !line.starts_with('^'))
         .filter_map(|line| line.split_once(' ').map(|(_, name)| name.trim()))
@@ -187,7 +225,7 @@ fn packed_refs(text: &str, branches: bool, tags: bool) -> Vec<String> {
 }
 
 /// Remote names from a git configuration file: `[remote "name"]`.
-fn remotes(text: &str) -> Vec<String> {
+pub(crate) fn remotes(text: &str) -> Vec<String> {
     text.lines()
         .filter_map(|line| {
             let line = line.trim();
@@ -203,9 +241,11 @@ fn remotes(text: &str) -> Vec<String> {
 /// Host names from the user's SSH configuration (`~/.ssh/config`), without
 /// patterns.
 pub fn ssh_hosts(home: &Path) -> Vec<String> {
-    let Some(text) = read_bounded(&home.join(".ssh").join("config")) else {
-        return Vec::new();
-    };
+    read_bounded(&home.join(".ssh").join("config")).map_or_else(Vec::new, |text| hosts(&text))
+}
+
+/// Host names from the text of an SSH configuration, without patterns.
+pub(crate) fn hosts(text: &str) -> Vec<String> {
     let hosts = text.lines().flat_map(|line| {
         let line = line.trim();
         let (keyword, rest) = line
@@ -227,7 +267,7 @@ pub fn ssh_hosts(home: &Path) -> Vec<String> {
 
 /// Sorts, removes repeats and leaves out names that cannot be typed as one
 /// word or that would display as something else.
-fn clean(mut names: Vec<String>) -> Vec<String> {
+pub(crate) fn clean(mut names: Vec<String>) -> Vec<String> {
     names.retain(|name| {
         // A name starting with `-` would be read as an option; real refs,
         // remotes and hosts never do.
@@ -247,7 +287,7 @@ fn clean(mut names: Vec<String>) -> Vec<String> {
 /// A regular file's text, at most [`MAX_FILE_BYTES`] of it; `None` for
 /// anything else (missing, a directory, a pipe or a device).
 fn read_bounded(path: &Path) -> Option<String> {
-    if !std::fs::metadata(path).ok()?.is_file() {
+    if !may_follow(path) || !std::fs::metadata(path).ok()?.is_file() {
         return None;
     }
     let file = std::fs::File::open(path).ok()?;
@@ -324,11 +364,14 @@ mod tests {
     }
 
     #[test]
-    fn outside_a_repository_there_are_no_names() {
-        let dir = temp("none");
-        // The temporary directory itself may sit inside a repository; only
-        // check that a missing start gives nothing.
-        assert!(git_names(&dir.join("missing").join("x"), GitNames::Branches).len() < MAX_NAMES);
+    fn a_broken_git_file_gives_no_names() {
+        // The nearest `.git` decides; a broken one is not looked past, so
+        // this holds even if the temporary directory sits in a repository.
+        let dir = temp("broken");
+        write(&dir.join(".git"), "not a gitdir line\n");
+        assert!(git_names(&dir, GitNames::Branches).is_empty());
+        write(&dir.join(".git"), "gitdir: missing/dir\n");
+        assert!(git_names(&dir, GitNames::Branches).is_empty());
         std::fs::remove_dir_all(&dir).expect("remove");
     }
 
@@ -374,6 +417,52 @@ mod tests {
             assert!(local_join(base, r"C:\repo\.git").is_some());
         }
         assert!(clean(vec!["--orphan".into(), "-x".into()]).is_empty());
+    }
+
+    #[test]
+    fn only_names_git_could_have_are_offered() {
+        for good in ["main", "feature/login", "v1.0", "origin/main", "a-b_c"] {
+            assert!(is_ref_name(good), "{good}");
+        }
+        for bad in [
+            "//host/share/x",
+            r"a\b",
+            "a..b",
+            "/lead",
+            "trail/",
+            "x:y",
+            "x.lock",
+            "end.",
+            "a/.hidden",
+            "@",
+            "a@{1}",
+            "~x",
+        ] {
+            assert!(!is_ref_name(bad), "{bad}");
+        }
+        assert_eq!(
+            packed_refs("0 refs/heads///host/share\n0 refs/heads/ok\n", true, false),
+            ["//host/share", "ok"],
+            "read as written, then refused by git_names"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn links_in_a_repository_are_not_followed_on_windows() {
+        let repo = temp("links");
+        let git = repo.join(".git");
+        write(&git.join("refs/heads/main"), "0\n");
+        let target = repo.join("elsewhere");
+        write(&target.join("packed-refs"), "0 refs/heads/planted\n");
+        // Creating links needs a privilege the machine may not grant.
+        if std::os::windows::fs::symlink_file(target.join("packed-refs"), git.join("packed-refs"))
+            .is_ok()
+        {
+            assert!(!may_follow(&git.join("packed-refs")));
+            assert_eq!(git_names(&repo, GitNames::Branches), ["main"]);
+        }
+        std::fs::remove_dir_all(&repo).expect("remove");
     }
 
     #[test]

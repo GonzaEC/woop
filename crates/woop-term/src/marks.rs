@@ -276,7 +276,9 @@ fn parse(payload: &[u8], token: Option<&[u8]>) -> Option<Mark> {
 
 /// The working directory in an accepted prompt mark's `cwd=` option
 /// (ADR 0022): percent-decoded, valid UTF-8 without control characters,
-/// and an absolute path. Anything else is ignored.
+/// and an absolute path: one of this platform, or a POSIX one (bash on
+/// Windows reports `/c/Users`, which completion converts, ADR 0023).
+/// Anything else is ignored.
 fn directory(payload: &[u8]) -> Option<String> {
     let encoded = payload
         .split(|&byte| byte == b';')
@@ -285,7 +287,7 @@ fn directory(payload: &[u8]) -> Option<String> {
     let directory = String::from_utf8(percent_decode(encoded)?).ok()?;
     let valid = !directory.is_empty()
         && !directory.chars().any(char::is_control)
-        && std::path::Path::new(&directory).is_absolute();
+        && (std::path::Path::new(&directory).is_absolute() || directory.starts_with('/'));
     valid.then_some(directory)
 }
 
@@ -443,6 +445,9 @@ mod tests {
         let mut scanner = MarkScanner::default();
         scanner.scan(format!("\x1b]133;B;cwd={}\x07", encode(&absolute("x"))).as_bytes());
         assert_eq!(scanner.take_directory(), None);
+        // POSIX paths are kept on every platform: bash on Windows reports
+        // its directory as `/c/Users`.
+        assert_eq!(check("/c/Users/me"), Some(Some("/c/Users/me".to_owned())));
     }
 
     #[test]

@@ -118,12 +118,24 @@ pub fn parse(shell: Shell, bytes: &[u8]) -> Vec<String> {
     kept
 }
 
-/// Removes control characters other than line breaks and trailing line
-/// breaks; `None` for commands that are empty or too long for the editor.
+/// Removes control characters other than tabs and line breaks, and
+/// trailing line breaks; `None` for commands that are empty, too long for
+/// the editor, or that would display differently from what they are.
 fn clean(command: &str) -> Option<String> {
+    // A command that would display differently from what it is (reordered
+    // by a bidirectional control, or with invisible characters) is left
+    // out: removing them would change what it does.
+    if command
+        .chars()
+        .any(|ch| !ch.is_control() && crate::completion::is_deceptive(ch))
+    {
+        return None;
+    }
+    // Tabs are part of commands (`cut -d'<tab>'`); other control characters
+    // are stray bytes, and are removed when the command is sent anyway.
     let cleaned: String = command
         .chars()
-        .filter(|&ch| ch == '\n' || !ch.is_control())
+        .filter(|&ch| matches!(ch, '\n' | '\t') || !ch.is_control())
         .collect();
     let cleaned = cleaned.trim_end_matches('\n');
     (!cleaned.trim().is_empty() && crate::editor::holds(cleaned)).then(|| cleaned.to_owned())
@@ -307,6 +319,15 @@ mod tests {
         let long = "x".repeat(5 * 1024);
         let file = format!("echo \x1b[31mred\x07\n\x1b\n{long}\nok\n");
         assert_eq!(parse(Shell::Bash, file.as_bytes()), ["echo [31mred", "ok"]);
+    }
+
+    #[test]
+    fn tabs_stay_and_commands_that_display_differently_are_left_out() {
+        let file = "cut -d'\t' -f1\nrm \u{202e}txt.exe\nzero\u{200b}width\nok\n";
+        assert_eq!(
+            parse(Shell::Bash, file.as_bytes()),
+            ["cut -d'\t' -f1", "ok"]
+        );
     }
 
     #[test]

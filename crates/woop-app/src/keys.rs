@@ -225,6 +225,9 @@ pub enum EditorKey {
     CompletionMove(isize),
     /// Insert the chosen completion.
     CompletionAccept,
+    /// Enter with the list open: insert the chosen completion, or run the
+    /// command when the list came late and nothing was chosen (ADR 0025).
+    CompletionEnter,
     /// Close the completion list.
     CompletionClose,
 }
@@ -277,7 +280,8 @@ pub fn editor_key(
         match (named, modifiers.shift()) {
             (Named::ArrowUp, false) | (Named::Tab, true) => return EditorKey::CompletionMove(-1),
             (Named::ArrowDown, false) => return EditorKey::CompletionMove(1),
-            (Named::Enter | Named::Tab, false) => return EditorKey::CompletionAccept,
+            (Named::Tab, false) => return EditorKey::CompletionAccept,
+            (Named::Enter, false) => return EditorKey::CompletionEnter,
             (Named::Escape, _) => return EditorKey::CompletionClose,
             _ => {}
         }
@@ -816,7 +820,7 @@ mod tests {
         );
         assert_eq!(
             open.key(named(Named::Enter), none),
-            EditorKey::CompletionAccept
+            EditorKey::CompletionEnter
         );
         assert_eq!(
             open.key(named(Named::Escape), none),

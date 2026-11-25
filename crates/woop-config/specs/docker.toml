@@ -3,11 +3,11 @@ name = "docker"
 description = "Container engine"
 options = [
   { names = ["-v", "--version"], description = "Print the version" },
-  { names = ["-H", "--host"], description = "Daemon to connect to", args = "text", global = true },
-  { names = ["-c", "--context"], description = "Context to use", args = "text", global = true },
-  { names = ["-D", "--debug"], description = "Debug output", global = true },
-  { names = ["-l", "--log-level"], description = "Logging level", args = ["debug", "info", "warn", "error", "fatal"], global = true },
-  { names = ["--config"], description = "Directory of the client configuration", args = "directory", global = true },
+  { names = ["-H", "--host"], description = "Daemon to connect to", args = "text" },
+  { names = ["-c", "--context"], description = "Context to use", args = "text" },
+  { names = ["-D", "--debug"], description = "Debug output" },
+  { names = ["-l", "--log-level"], description = "Logging level", args = ["debug", "info", "warn", "error", "fatal"] },
+  { names = ["--config"], description = "Directory of the client configuration", args = "directory" },
 ]
 
 [[subcommands]]
@@ -217,10 +217,10 @@ description = "Show system-wide information"
 name = "compose"
 description = "Run multi-container applications"
 options = [
-  { names = ["-f", "--file"], description = "Compose file", args = "file", global = true },
-  { names = ["-p", "--project-name"], description = "Project name", args = "text", global = true },
-  { names = ["--profile"], description = "Enable a profile", args = "text", global = true },
-  { names = ["--env-file"], description = "Environment file", args = "file", global = true },
+  { names = ["-f", "--file"], description = "Compose file", args = "file" },
+  { names = ["-p", "--project-name"], description = "Project name", args = "text" },
+  { names = ["--profile"], description = "Enable a profile", args = "text" },
+  { names = ["--env-file"], description = "Environment file", args = "file" },
 ]
 
 [[subcommands.subcommands]]

@@ -11,15 +11,21 @@ use crate::completion::{Candidate, Kind, PathRequest, Word};
 /// bundled ones with the same name.
 #[derive(Debug, Default)]
 pub struct Specs {
-    commands: Vec<Command>,
+    user: Vec<Command>,
+    /// Parsed once and shared, so reading the user's files again does not
+    /// parse these again. Empty until the first specifications are loaded
+    /// off the interface thread.
+    bundled: Arc<[Command]>,
 }
 
 impl Specs {
-    /// The user's specifications followed by the bundled ones.
+    /// The user's specifications followed by the bundled ones. Parses the
+    /// bundled ones the first time: call it off the interface thread.
     pub fn new(user: Vec<Command>) -> Arc<Self> {
-        let mut commands = user;
-        commands.extend(woop_config::spec::bundled());
-        Arc::new(Self { commands })
+        Arc::new(Self {
+            user,
+            bundled: woop_config::spec::bundled(),
+        })
     }
 
     /// The specification for the command named by `word` (a path or a
@@ -27,7 +33,7 @@ impl Specs {
     /// for platforms whose command names ignore case.
     pub fn find(&self, word: &str, ignore_case: bool) -> Option<&Command> {
         let name = command_name(word);
-        self.commands.iter().find(|command| {
+        self.user.iter().chain(self.bundled.iter()).find(|command| {
             std::iter::once(&command.name)
                 .chain(&command.aliases)
                 .any(|known| {
@@ -43,7 +49,7 @@ impl Specs {
 
 /// The command's name in `word`, without a directory or a Windows program
 /// extension.
-fn command_name(word: &str) -> &str {
+pub(crate) fn command_name(word: &str) -> &str {
     let file = word.rsplit(['/', '\\']).next().unwrap_or(word);
     for extension in [".exe", ".cmd", ".bat", ".com"] {
         if file.len() > extension.len()
@@ -74,7 +80,8 @@ pub fn suggest(spec: &Command, words: &[Word], request: &PathRequest) -> Suggest
     };
     let mut node = spec;
     let mut globals: Vec<&Opt> = spec.options.iter().filter(|option| option.global).collect();
-    let mut positional = false;
+    // Positional arguments of the current command so far.
+    let mut positionals = 0_usize;
     let mut expecting: Option<&Arg> = None;
     let mut options_ended = false;
     for word in done.iter().skip(1) {
@@ -86,7 +93,11 @@ pub fn suggest(spec: &Command, words: &[Word], request: &PathRequest) -> Suggest
             options_ended = true;
             continue;
         }
-        if !options_ended && value.len() > 1 && value.starts_with('-') {
+        if options_ended {
+            positionals += 1;
+            continue;
+        }
+        if value.len() > 1 && value.starts_with('-') {
             let (name, inline) = match value.split_once('=') {
                 Some((name, _)) => (name, true),
                 None => (value, false),
@@ -98,29 +109,38 @@ pub fn suggest(spec: &Command, words: &[Word], request: &PathRequest) -> Suggest
             }
             continue;
         }
-        if !positional && let Some(sub) = node.subcommands.iter().find(|sub| sub.is_named(value)) {
+        if positionals == 0
+            && let Some(sub) = node.subcommands.iter().find(|sub| sub.is_named(value))
+        {
             node = sub;
             globals.extend(sub.options.iter().filter(|option| option.global));
             continue;
         }
-        positional = true;
+        positionals += 1;
     }
 
     let prefix = current.value.as_str();
     if let Some(arg) = expecting {
         return for_arg(arg, request);
     }
-    if !options_ended && prefix.starts_with('-') {
+    // After `--`, arguments are what most commands take there: paths
+    // (`git checkout -- <file>`).
+    if options_ended {
+        return for_arg(&Arg::Path, request);
+    }
+    if prefix.starts_with('-') {
         return Suggestion {
             candidates: options(node, &globals, request),
             lookup: None,
         };
     }
-    let mut suggestion = node
-        .args
-        .as_ref()
-        .map_or_else(Suggestion::default, |arg| for_arg(arg, request));
-    if !positional {
+    let arg = if positionals == 0 {
+        node.args.as_ref()
+    } else {
+        node.rest.as_ref().or(node.args.as_ref())
+    };
+    let mut suggestion = arg.map_or_else(Suggestion::default, |arg| for_arg(arg, request));
+    if positionals == 0 {
         let subcommands = node.subcommands.iter().filter_map(|sub| {
             let name = std::iter::once(&sub.name)
                 .chain(&sub.aliases)
@@ -213,6 +233,7 @@ mod tests {
             [[subcommands]]
             name = "push"
             args = "git-remote"
+            rest = "git-branch"
 
             [[subcommands]]
             name = "copy"
@@ -298,6 +319,26 @@ mod tests {
         assert!(texts(&complete("tool copy x p")).is_empty());
         // After `--`, words starting with `-` are arguments.
         assert_eq!(complete("tool copy -- -").lookup, Some(Arg::Path));
+        // After `--`, paths whatever the arguments were before.
+        assert_eq!(complete("tool pick -- ap").lookup, Some(Arg::Path));
+        assert!(complete("tool pick -- ap").candidates.is_empty());
+    }
+
+    #[test]
+    fn later_arguments_follow_rest() {
+        assert_eq!(complete("tool push ").lookup, Some(Arg::GitRemote));
+        assert_eq!(complete("tool push origin ").lookup, Some(Arg::GitBranch));
+        assert_eq!(
+            complete("tool push origin main ").lookup,
+            Some(Arg::GitBranch)
+        );
+        // An option between them does not count as an argument.
+        assert_eq!(
+            complete("tool push -v origin ").lookup,
+            Some(Arg::GitBranch)
+        );
+        // Without `rest`, the first kind repeats.
+        assert_eq!(complete("tool copy a b ").lookup, Some(Arg::Path));
     }
 
     #[test]

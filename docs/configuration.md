@@ -94,5 +94,6 @@ args = "git-tag"
   - `text`: nothing to complete;
   - `git-branch`, `git-tag`, `git-ref` or `git-remote`: read from the files of the git repository the shell is in;
   - `ssh-host`: the hosts named in `~/.ssh/config`.
+- `rest`: what the second and later arguments are, in the same form, when they differ from the first (`git push` takes a remote, then branches: `args = "git-remote"`, `rest = "git-branch"`). After `--`, arguments complete as paths.
 
-A specification only describes a command; Woop never runs anything to complete it. Values are read from files, without running git. A file that cannot be used is reported and skipped, and the others still apply. Like `config.toml`, these files are ignored on macOS and Linux if other users could change them or the directory they are in. See [ADR 0024](adr/0024-command-specifications.md).
+A specification only describes a command; Woop never runs anything to complete it. Values are read from files, without running git, and on Windows never through links to network shares. A file that cannot be used is reported and skipped, and the others still apply. Like `config.toml`, these files are ignored on macOS and Linux if other users could change them or the directory they are in. See [ADR 0024](adr/0024-command-specifications.md) and [ADR 0025](adr/0025-completion-refinements-from-the-milestone-6-audit.md).

@@ -4159,6 +4159,7 @@ name = "woop-app"
 version = "0.1.0"
 dependencies = [
  "iced",
+ "proptest",
  "woop-config",
  "woop-term",
 ]
@@ -4167,6 +4168,7 @@ dependencies = [
 name = "woop-config"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "serde",
  "thiserror 2.0.21",
  "toml",

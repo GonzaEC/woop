@@ -20,3 +20,6 @@ workspace = true
 iced.workspace = true
 woop-term.workspace = true
 woop-config.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
