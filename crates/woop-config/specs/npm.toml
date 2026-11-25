@@ -1,0 +1,252 @@
+# Subcommands and options of npm, for completion (ADR 0024).
+name = "npm"
+description = "Node.js package manager"
+options = [
+  { names = ["-v", "--version"], description = "Print the version" },
+  { names = ["-h", "--help"], description = "Show help" },
+  { names = ["-w", "--workspace"], description = "In this workspace", args = "text", global = true },
+  { names = ["--prefix"], description = "Run in this directory", args = "directory", global = true },
+]
+
+[[subcommands]]
+name = "install"
+aliases = ["i", "add"]
+description = "Install packages"
+args = "text"
+options = [
+  { names = ["-D", "--save-dev"], description = "As a development dependency" },
+  { names = ["-O", "--save-optional"], description = "As an optional dependency" },
+  { names = ["-E", "--save-exact"], description = "Save the exact version" },
+  { names = ["--no-save"], description = "Do not change package.json" },
+  { names = ["-g", "--global"], description = "Install globally" },
+  { names = ["--omit"], description = "Leave out this kind of dependency", args = ["dev", "optional", "peer"] },
+]
+
+[[subcommands]]
+name = "ci"
+description = "Install exactly what the lock file says"
+options = [
+  { names = ["--omit"], description = "Leave out this kind of dependency", args = ["dev", "optional", "peer"] },
+]
+
+[[subcommands]]
+name = "uninstall"
+aliases = ["remove", "rm", "un"]
+description = "Remove packages"
+args = "text"
+options = [
+  { names = ["-g", "--global"], description = "Remove a global package" },
+  { names = ["-D", "--save-dev"], description = "From the development dependencies" },
+]
+
+[[subcommands]]
+name = "update"
+aliases = ["up"]
+description = "Update packages"
+args = "text"
+options = [
+  { names = ["-g", "--global"], description = "Update global packages" },
+]
+
+[[subcommands]]
+name = "run"
+aliases = ["run-script"]
+description = "Run a script from package.json"
+args = "text"
+options = [
+  { names = ["--if-present"], description = "Do nothing if the script is missing" },
+  { names = ["--workspaces"], description = "In every workspace" },
+]
+
+[[subcommands]]
+name = "test"
+aliases = ["t"]
+description = "Run the test script"
+
+[[subcommands]]
+name = "start"
+description = "Run the start script"
+
+[[subcommands]]
+name = "stop"
+description = "Run the stop script"
+
+[[subcommands]]
+name = "restart"
+description = "Run the restart script"
+
+[[subcommands]]
+name = "exec"
+aliases = ["x"]
+description = "Run a command from a package"
+args = "text"
+options = [
+  { names = ["-c", "--call"], description = "Run this command line", args = "text" },
+  { names = ["-y", "--yes"], description = "Install without asking" },
+]
+
+[[subcommands]]
+name = "init"
+description = "Create a package.json"
+options = [
+  { names = ["-y", "--yes"], description = "Use the defaults" },
+  { names = ["--scope"], description = "Package scope", args = "text" },
+]
+
+[[subcommands]]
+name = "publish"
+description = "Publish the package"
+args = "directory"
+options = [
+  { names = ["--access"], description = "Who can install it", args = ["public", "restricted"] },
+  { names = ["--tag"], description = "Publish under this tag", args = "text" },
+  { names = ["--dry-run"], description = "Show what would be published" },
+  { names = ["--otp"], description = "One-time password", args = "text" },
+]
+
+[[subcommands]]
+name = "ls"
+aliases = ["list"]
+description = "List installed packages"
+args = "text"
+options = [
+  { names = ["--all"], description = "Every dependency" },
+  { names = ["--depth"], description = "How deep to go", args = "text" },
+  { names = ["-g", "--global"], description = "Global packages" },
+  { names = ["--json"], description = "As JSON" },
+]
+
+[[subcommands]]
+name = "outdated"
+description = "List outdated packages"
+options = [
+  { names = ["-g", "--global"], description = "Global packages" },
+  { names = ["--json"], description = "As JSON" },
+]
+
+[[subcommands]]
+name = "audit"
+description = "Report known vulnerabilities"
+options = [
+  { names = ["--audit-level"], description = "Lowest severity reported", args = ["info", "low", "moderate", "high", "critical"] },
+  { names = ["--json"], description = "As JSON" },
+]
+
+[[subcommands.subcommands]]
+name = "fix"
+description = "Install compatible fixed versions"
+options = [
+  { names = ["--force"], description = "Allow breaking upgrades" },
+  { names = ["--dry-run"], description = "Show what would change" },
+]
+
+[[subcommands]]
+name = "version"
+description = "Bump the package's version"
+args = ["major", "minor", "patch", "premajor", "preminor", "prepatch", "prerelease"]
+options = [
+  { names = ["--no-git-tag-version"], description = "Do not commit or tag" },
+  { names = ["--preid"], description = "Prerelease identifier", args = "text" },
+]
+
+[[subcommands]]
+name = "view"
+aliases = ["info", "show"]
+description = "Show a package's registry data"
+args = "text"
+
+[[subcommands]]
+name = "search"
+description = "Search the registry"
+args = "text"
+
+[[subcommands]]
+name = "pack"
+description = "Make a tarball of the package"
+options = [
+  { names = ["--dry-run"], description = "Show what would be included" },
+]
+
+[[subcommands]]
+name = "link"
+description = "Link a local package"
+args = "directory"
+
+[[subcommands]]
+name = "cache"
+description = "Manage the package cache"
+
+[[subcommands.subcommands]]
+name = "clean"
+description = "Empty the cache"
+options = [
+  { names = ["--force"], description = "Required to clean it" },
+]
+
+[[subcommands.subcommands]]
+name = "verify"
+description = "Check the cache"
+
+[[subcommands.subcommands]]
+name = "ls"
+description = "List cached packages"
+
+[[subcommands]]
+name = "config"
+description = "Manage npm's configuration"
+
+[[subcommands.subcommands]]
+name = "get"
+description = "Print a value"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "set"
+description = "Set a value"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "delete"
+description = "Remove a value"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List the configuration"
+
+[[subcommands.subcommands]]
+name = "edit"
+description = "Open the configuration in an editor"
+
+[[subcommands]]
+name = "login"
+description = "Sign in to a registry"
+
+[[subcommands]]
+name = "logout"
+description = "Sign out of a registry"
+
+[[subcommands]]
+name = "whoami"
+description = "Print the signed-in user"
+
+[[subcommands]]
+name = "doctor"
+description = "Check the environment"
+
+[[subcommands]]
+name = "prune"
+description = "Remove packages that are not dependencies"
+
+[[subcommands]]
+name = "dedupe"
+description = "Simplify the dependency tree"
+
+[[subcommands]]
+name = "fund"
+description = "Show how to fund dependencies"
+
+[[subcommands]]
+name = "help"
+description = "Show help for a command"
+args = "text"

@@ -1,0 +1,179 @@
+# Subcommands and options of pip, for completion (ADR 0024).
+name = "pip"
+aliases = ["pip3"]
+description = "Python package installer"
+options = [
+  { names = ["-V", "--version"], description = "Print the version" },
+  { names = ["-h", "--help"], description = "Show help", global = true },
+  { names = ["-v", "--verbose"], description = "More output", global = true },
+  { names = ["-q", "--quiet"], description = "Less output", global = true },
+  { names = ["--isolated"], description = "Ignore the environment and user configuration", global = true },
+  { names = ["--python"], description = "Run against this Python", args = "text", global = true },
+  { names = ["--proxy"], description = "Proxy server", args = "text", global = true },
+  { names = ["--no-color"], description = "No colours", global = true },
+  { names = ["--disable-pip-version-check"], description = "Do not check for a newer pip", global = true },
+]
+
+[[subcommands]]
+name = "install"
+description = "Install packages"
+args = "text"
+options = [
+  { names = ["-r", "--requirement"], description = "From a requirements file", args = "file" },
+  { names = ["-e", "--editable"], description = "A local project in editable mode", args = "path" },
+  { names = ["-U", "--upgrade"], description = "Upgrade to the newest version" },
+  { names = ["--user"], description = "Into the user's directory" },
+  { names = ["--no-deps"], description = "Without dependencies" },
+  { names = ["--pre"], description = "Allow prereleases" },
+  { names = ["-t", "--target"], description = "Into this directory", args = "directory" },
+  { names = ["--force-reinstall"], description = "Reinstall even if up to date" },
+  { names = ["--no-cache-dir"], description = "Do not use the cache" },
+  { names = ["-i", "--index-url"], description = "Package index", args = "text" },
+  { names = ["--extra-index-url"], description = "Another package index", args = "text" },
+  { names = ["-c", "--constraint"], description = "Constraints file", args = "file" },
+  { names = ["--dry-run"], description = "Show what would be installed" },
+]
+
+[[subcommands]]
+name = "uninstall"
+description = "Remove packages"
+args = "text"
+options = [
+  { names = ["-y", "--yes"], description = "Do not ask" },
+  { names = ["-r", "--requirement"], description = "Those in a requirements file", args = "file" },
+]
+
+[[subcommands]]
+name = "list"
+description = "List installed packages"
+options = [
+  { names = ["-o", "--outdated"], description = "Only outdated ones" },
+  { names = ["-u", "--uptodate"], description = "Only up-to-date ones" },
+  { names = ["-e", "--editable"], description = "Only editable ones" },
+  { names = ["--user"], description = "Only the user's" },
+  { names = ["--format"], description = "Output format", args = ["columns", "freeze", "json"] },
+]
+
+[[subcommands]]
+name = "show"
+description = "Show installed packages"
+args = "text"
+options = [
+  { names = ["-f", "--files"], description = "List their files" },
+]
+
+[[subcommands]]
+name = "freeze"
+description = "Print installed packages as requirements"
+options = [
+  { names = ["--all"], description = "Include pip and its tools" },
+  { names = ["-l", "--local"], description = "Not global packages" },
+  { names = ["-r", "--requirement"], description = "In the order of this file", args = "file" },
+]
+
+[[subcommands]]
+name = "download"
+description = "Download packages"
+args = "text"
+options = [
+  { names = ["-d", "--dest"], description = "Into this directory", args = "directory" },
+  { names = ["-r", "--requirement"], description = "From a requirements file", args = "file" },
+  { names = ["--no-deps"], description = "Without dependencies" },
+]
+
+[[subcommands]]
+name = "wheel"
+description = "Build wheels"
+args = "text"
+options = [
+  { names = ["-w", "--wheel-dir"], description = "Into this directory", args = "directory" },
+  { names = ["-r", "--requirement"], description = "From a requirements file", args = "file" },
+]
+
+[[subcommands]]
+name = "check"
+description = "Check that dependencies are compatible"
+
+[[subcommands]]
+name = "inspect"
+description = "Print the environment as JSON"
+
+[[subcommands]]
+name = "hash"
+description = "Compute hashes of archives"
+args = "file"
+
+[[subcommands]]
+name = "config"
+description = "Manage pip's configuration"
+options = [
+  { names = ["--global"], description = "The system's", global = true },
+  { names = ["--user"], description = "The user's", global = true },
+  { names = ["--site"], description = "The environment's", global = true },
+]
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List values"
+
+[[subcommands.subcommands]]
+name = "get"
+description = "Print a value"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "set"
+description = "Set a value"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "unset"
+description = "Remove a value"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "edit"
+description = "Open the configuration in an editor"
+
+[[subcommands]]
+name = "cache"
+description = "Manage the cache"
+
+[[subcommands.subcommands]]
+name = "dir"
+description = "Print the cache directory"
+
+[[subcommands.subcommands]]
+name = "info"
+description = "Show the cache's size"
+
+[[subcommands.subcommands]]
+name = "list"
+description = "List cached wheels"
+
+[[subcommands.subcommands]]
+name = "remove"
+description = "Remove matching wheels"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "purge"
+description = "Empty the cache"
+
+[[subcommands]]
+name = "index"
+description = "Inspect package indexes"
+
+[[subcommands.subcommands]]
+name = "versions"
+description = "List a package's versions"
+args = "text"
+
+[[subcommands]]
+name = "debug"
+description = "Show debugging information"
+
+[[subcommands]]
+name = "help"
+description = "Show help for a command"
+args = ["install", "uninstall", "list", "show", "freeze", "download", "wheel", "check", "inspect", "hash", "config", "cache", "index", "debug"]

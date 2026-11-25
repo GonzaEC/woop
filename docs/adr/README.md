@@ -42,3 +42,4 @@ Start from [the template](template.md) and add the record to the index below in 
 | [0021](0021-configurable-keybindings.md) | Let the configuration change Woop's shortcuts | Accepted |
 | [0022](0022-working-directory-from-signed-marks.md) | Open new panes in the shell's directory, reported in signed marks | Accepted |
 | [0023](0023-history-and-path-completions.md) | Complete commands from the history and paths from the shell's directory | Accepted |
+| [0024](0024-command-specifications.md) | Complete subcommands and options from command specifications | Accepted |

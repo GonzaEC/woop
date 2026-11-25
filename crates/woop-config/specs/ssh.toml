@@ -1,0 +1,29 @@
+# Options of ssh, for completion (ADR 0024).
+name = "ssh"
+description = "Remote login"
+args = "ssh-host"
+options = [
+  { names = ["-p"], description = "Port", args = "text" },
+  { names = ["-i"], description = "Identity (private key) file", args = "file" },
+  { names = ["-l"], description = "User name", args = "text" },
+  { names = ["-F"], description = "Configuration file", args = "file" },
+  { names = ["-J"], description = "Connect through this jump host", args = "ssh-host" },
+  { names = ["-L"], description = "Forward a local port", args = "text" },
+  { names = ["-R"], description = "Forward a remote port", args = "text" },
+  { names = ["-D"], description = "Dynamic (SOCKS) port forwarding", args = "text" },
+  { names = ["-W"], description = "Forward standard input and output to a host", args = "text" },
+  { names = ["-o"], description = "Set a configuration option", args = "text" },
+  { names = ["-A"], description = "Forward the authentication agent" },
+  { names = ["-N"], description = "Run no remote command" },
+  { names = ["-T"], description = "Allocate no terminal" },
+  { names = ["-t"], description = "Allocate a terminal" },
+  { names = ["-f"], description = "Go to the background" },
+  { names = ["-C"], description = "Compress" },
+  { names = ["-q"], description = "Quiet" },
+  { names = ["-v"], description = "Verbose" },
+  { names = ["-X"], description = "Forward X11" },
+  { names = ["-Y"], description = "Forward X11, trusted" },
+  { names = ["-4"], description = "IPv4 only" },
+  { names = ["-6"], description = "IPv6 only" },
+  { names = ["-V"], description = "Print the version" },
+]

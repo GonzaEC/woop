@@ -1,0 +1,487 @@
+# Subcommands and options of docker, for completion (ADR 0024).
+name = "docker"
+description = "Container engine"
+options = [
+  { names = ["-v", "--version"], description = "Print the version" },
+  { names = ["-H", "--host"], description = "Daemon to connect to", args = "text", global = true },
+  { names = ["-c", "--context"], description = "Context to use", args = "text", global = true },
+  { names = ["-D", "--debug"], description = "Debug output", global = true },
+  { names = ["-l", "--log-level"], description = "Logging level", args = ["debug", "info", "warn", "error", "fatal"], global = true },
+  { names = ["--config"], description = "Directory of the client configuration", args = "directory", global = true },
+]
+
+[[subcommands]]
+name = "run"
+description = "Create and run a container from an image"
+args = "text"
+options = [
+  { names = ["-d", "--detach"], description = "Run in the background" },
+  { names = ["-i", "--interactive"], description = "Keep standard input open" },
+  { names = ["-t", "--tty"], description = "Allocate a terminal" },
+  { names = ["--rm"], description = "Remove the container when it exits" },
+  { names = ["-p", "--publish"], description = "Publish a port (host:container)", args = "text" },
+  { names = ["-v", "--volume"], description = "Mount a volume (source:target)", args = "text" },
+  { names = ["--mount"], description = "Attach a mount", args = "text" },
+  { names = ["-e", "--env"], description = "Set an environment variable", args = "text" },
+  { names = ["--env-file"], description = "Read environment variables from a file", args = "file" },
+  { names = ["--name"], description = "Name of the container", args = "text" },
+  { names = ["--network"], description = "Connect to this network", args = "text" },
+  { names = ["-w", "--workdir"], description = "Working directory inside the container", args = "text" },
+  { names = ["--entrypoint"], description = "Override the entry point", args = "text" },
+  { names = ["-u", "--user"], description = "User inside the container", args = "text" },
+  { names = ["--restart"], description = "Restart policy", args = ["no", "on-failure", "always", "unless-stopped"] },
+  { names = ["--platform"], description = "Platform of the image", args = "text" },
+  { names = ["--pull"], description = "When to pull the image", args = ["always", "missing", "never"] },
+  { names = ["--gpus"], description = "GPUs to add", args = "text" },
+]
+
+[[subcommands]]
+name = "exec"
+description = "Run a command in a running container"
+args = "text"
+options = [
+  { names = ["-i", "--interactive"], description = "Keep standard input open" },
+  { names = ["-t", "--tty"], description = "Allocate a terminal" },
+  { names = ["-d", "--detach"], description = "Run in the background" },
+  { names = ["-u", "--user"], description = "User inside the container", args = "text" },
+  { names = ["-w", "--workdir"], description = "Working directory inside the container", args = "text" },
+  { names = ["-e", "--env"], description = "Set an environment variable", args = "text" },
+]
+
+[[subcommands]]
+name = "ps"
+description = "List containers"
+options = [
+  { names = ["-a", "--all"], description = "Stopped ones too" },
+  { names = ["-q", "--quiet"], description = "Only IDs" },
+  { names = ["-f", "--filter"], description = "Filter the list", args = "text" },
+  { names = ["--format"], description = "Output format", args = "text" },
+  { names = ["-s", "--size"], description = "Show sizes" },
+]
+
+[[subcommands]]
+name = "images"
+description = "List images"
+options = [
+  { names = ["-a", "--all"], description = "Intermediate images too" },
+  { names = ["-q", "--quiet"], description = "Only IDs" },
+  { names = ["-f", "--filter"], description = "Filter the list", args = "text" },
+]
+
+[[subcommands]]
+name = "build"
+description = "Build an image from a Dockerfile"
+args = "directory"
+options = [
+  { names = ["-t", "--tag"], description = "Name and tag of the image", args = "text" },
+  { names = ["-f", "--file"], description = "Dockerfile to use", args = "file" },
+  { names = ["--no-cache"], description = "Do not use the cache" },
+  { names = ["--build-arg"], description = "Set a build argument", args = "text" },
+  { names = ["--target"], description = "Stage to build", args = "text" },
+  { names = ["--platform"], description = "Platform to build for", args = "text" },
+  { names = ["--pull"], description = "Always pull the base images" },
+  { names = ["--progress"], description = "Progress output", args = ["auto", "plain", "tty"] },
+]
+
+[[subcommands]]
+name = "pull"
+description = "Download an image"
+args = "text"
+options = [
+  { names = ["-a", "--all-tags"], description = "Every tag" },
+  { names = ["--platform"], description = "Platform of the image", args = "text" },
+]
+
+[[subcommands]]
+name = "push"
+description = "Upload an image"
+args = "text"
+
+[[subcommands]]
+name = "tag"
+description = "Give an image another name"
+args = "text"
+
+[[subcommands]]
+name = "logs"
+description = "Show a container's logs"
+args = "text"
+options = [
+  { names = ["-f", "--follow"], description = "Keep following" },
+  { names = ["-n", "--tail"], description = "Only the last lines", args = "text" },
+  { names = ["-t", "--timestamps"], description = "Show times" },
+  { names = ["--since"], description = "Logs since this time", args = "text" },
+]
+
+[[subcommands]]
+name = "start"
+description = "Start stopped containers"
+args = "text"
+options = [
+  { names = ["-a", "--attach"], description = "Attach to the output" },
+  { names = ["-i", "--interactive"], description = "Attach standard input" },
+]
+
+[[subcommands]]
+name = "stop"
+description = "Stop running containers"
+args = "text"
+options = [
+  { names = ["-t", "--timeout"], description = "Seconds to wait before killing", args = "text" },
+]
+
+[[subcommands]]
+name = "restart"
+description = "Restart containers"
+args = "text"
+
+[[subcommands]]
+name = "kill"
+description = "Kill running containers"
+args = "text"
+options = [
+  { names = ["-s", "--signal"], description = "Signal to send", args = "text" },
+]
+
+[[subcommands]]
+name = "rm"
+description = "Remove containers"
+args = "text"
+options = [
+  { names = ["-f", "--force"], description = "Remove running ones too" },
+  { names = ["-v", "--volumes"], description = "Remove their anonymous volumes" },
+]
+
+[[subcommands]]
+name = "rmi"
+description = "Remove images"
+args = "text"
+options = [
+  { names = ["-f", "--force"], description = "Remove even if in use" },
+]
+
+[[subcommands]]
+name = "inspect"
+description = "Show low-level information about objects"
+args = "text"
+options = [
+  { names = ["-f", "--format"], description = "Output format", args = "text" },
+]
+
+[[subcommands]]
+name = "cp"
+description = "Copy files between a container and the host"
+args = "path"
+
+[[subcommands]]
+name = "top"
+description = "Show a container's processes"
+args = "text"
+
+[[subcommands]]
+name = "stats"
+description = "Show containers' resource use"
+options = [
+  { names = ["-a", "--all"], description = "Stopped ones too" },
+  { names = ["--no-stream"], description = "Print once" },
+]
+
+[[subcommands]]
+name = "attach"
+description = "Attach to a running container"
+args = "text"
+
+[[subcommands]]
+name = "login"
+description = "Sign in to a registry"
+args = "text"
+options = [
+  { names = ["-u", "--username"], description = "User name", args = "text" },
+  { names = ["--password-stdin"], description = "Read the password from standard input" },
+]
+
+[[subcommands]]
+name = "logout"
+description = "Sign out of a registry"
+args = "text"
+
+[[subcommands]]
+name = "version"
+description = "Show version information"
+
+[[subcommands]]
+name = "info"
+description = "Show system-wide information"
+
+[[subcommands]]
+name = "compose"
+description = "Run multi-container applications"
+options = [
+  { names = ["-f", "--file"], description = "Compose file", args = "file", global = true },
+  { names = ["-p", "--project-name"], description = "Project name", args = "text", global = true },
+  { names = ["--profile"], description = "Enable a profile", args = "text", global = true },
+  { names = ["--env-file"], description = "Environment file", args = "file", global = true },
+]
+
+[[subcommands.subcommands]]
+name = "up"
+description = "Create and start the services"
+args = "text"
+options = [
+  { names = ["-d", "--detach"], description = "Run in the background" },
+  { names = ["--build"], description = "Build images first" },
+  { names = ["--force-recreate"], description = "Recreate containers" },
+  { names = ["--remove-orphans"], description = "Remove containers of removed services" },
+  { names = ["--wait"], description = "Wait until the services are healthy" },
+]
+
+[[subcommands.subcommands]]
+name = "down"
+description = "Stop and remove the services"
+options = [
+  { names = ["-v", "--volumes"], description = "Remove volumes too" },
+  { names = ["--remove-orphans"], description = "Remove containers of removed services" },
+  { names = ["--rmi"], description = "Remove images too", args = ["local", "all"] },
+]
+
+[[subcommands.subcommands]]
+name = "ps"
+description = "List the services' containers"
+options = [
+  { names = ["-a", "--all"], description = "Stopped ones too" },
+]
+
+[[subcommands.subcommands]]
+name = "logs"
+description = "Show the services' logs"
+args = "text"
+options = [
+  { names = ["-f", "--follow"], description = "Keep following" },
+  { names = ["-n", "--tail"], description = "Only the last lines", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "build"
+description = "Build the services' images"
+args = "text"
+options = [
+  { names = ["--no-cache"], description = "Do not use the cache" },
+  { names = ["--pull"], description = "Always pull the base images" },
+]
+
+[[subcommands.subcommands]]
+name = "pull"
+description = "Download the services' images"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "exec"
+description = "Run a command in a running service"
+args = "text"
+options = [
+  { names = ["-T", "--no-TTY"], description = "Allocate no terminal" },
+  { names = ["-u", "--user"], description = "User inside the container", args = "text" },
+  { names = ["-w", "--workdir"], description = "Working directory inside the container", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "run"
+description = "Run a one-off command in a service"
+args = "text"
+options = [
+  { names = ["--rm"], description = "Remove the container when it exits" },
+  { names = ["-T", "--no-TTY"], description = "Allocate no terminal" },
+]
+
+[[subcommands.subcommands]]
+name = "start"
+description = "Start the services"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "stop"
+description = "Stop the services"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "restart"
+description = "Restart the services"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "config"
+description = "Print the resolved configuration"
+
+[[subcommands]]
+name = "container"
+description = "Manage containers"
+
+[[subcommands.subcommands]]
+name = "ls"
+description = "List containers"
+options = [
+  { names = ["-a", "--all"], description = "Stopped ones too" },
+]
+
+[[subcommands.subcommands]]
+name = "prune"
+description = "Remove stopped containers"
+options = [
+  { names = ["-f", "--force"], description = "Do not ask" },
+]
+
+[[subcommands.subcommands]]
+name = "rm"
+description = "Remove containers"
+args = "text"
+
+[[subcommands]]
+name = "image"
+description = "Manage images"
+
+[[subcommands.subcommands]]
+name = "ls"
+description = "List images"
+
+[[subcommands.subcommands]]
+name = "prune"
+description = "Remove unused images"
+options = [
+  { names = ["-a", "--all"], description = "Every unused image, not only dangling ones" },
+  { names = ["-f", "--force"], description = "Do not ask" },
+]
+
+[[subcommands.subcommands]]
+name = "rm"
+description = "Remove images"
+args = "text"
+
+[[subcommands]]
+name = "network"
+description = "Manage networks"
+
+[[subcommands.subcommands]]
+name = "ls"
+description = "List networks"
+
+[[subcommands.subcommands]]
+name = "create"
+description = "Create a network"
+args = "text"
+options = [
+  { names = ["-d", "--driver"], description = "Network driver", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "rm"
+description = "Remove networks"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "inspect"
+description = "Show networks"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "connect"
+description = "Connect a container to a network"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "disconnect"
+description = "Disconnect a container from a network"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "prune"
+description = "Remove unused networks"
+
+[[subcommands]]
+name = "volume"
+description = "Manage volumes"
+
+[[subcommands.subcommands]]
+name = "ls"
+description = "List volumes"
+
+[[subcommands.subcommands]]
+name = "create"
+description = "Create a volume"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "rm"
+description = "Remove volumes"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "inspect"
+description = "Show volumes"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "prune"
+description = "Remove unused volumes"
+options = [
+  { names = ["-a", "--all"], description = "Named volumes too" },
+  { names = ["-f", "--force"], description = "Do not ask" },
+]
+
+[[subcommands]]
+name = "system"
+description = "Manage the engine"
+
+[[subcommands.subcommands]]
+name = "df"
+description = "Show disk use"
+
+[[subcommands.subcommands]]
+name = "info"
+description = "Show system-wide information"
+
+[[subcommands.subcommands]]
+name = "prune"
+description = "Remove unused data"
+options = [
+  { names = ["-a", "--all"], description = "Every unused image too" },
+  { names = ["-f", "--force"], description = "Do not ask" },
+  { names = ["--volumes"], description = "Unused volumes too" },
+]
+
+[[subcommands]]
+name = "buildx"
+description = "Extended builds"
+
+[[subcommands.subcommands]]
+name = "build"
+description = "Build an image"
+args = "directory"
+options = [
+  { names = ["-t", "--tag"], description = "Name and tag of the image", args = "text" },
+  { names = ["-f", "--file"], description = "Dockerfile to use", args = "file" },
+  { names = ["--platform"], description = "Platforms to build for", args = "text" },
+  { names = ["--push"], description = "Push the result" },
+  { names = ["--load"], description = "Load the result into the engine" },
+]
+
+[[subcommands.subcommands]]
+name = "ls"
+description = "List builders"
+
+[[subcommands.subcommands]]
+name = "create"
+description = "Create a builder"
+options = [
+  { names = ["--use"], description = "Use it" },
+  { names = ["--name"], description = "Name of the builder", args = "text" },
+]
+
+[[subcommands.subcommands]]
+name = "use"
+description = "Set the current builder"
+args = "text"
+
+[[subcommands.subcommands]]
+name = "rm"
+description = "Remove a builder"
+args = "text"

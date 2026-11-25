@@ -6,6 +6,7 @@
 //! they apply without restarting.
 
 mod keys;
+pub mod spec;
 mod theme;
 
 use std::path::{Path, PathBuf};
@@ -133,6 +134,16 @@ pub fn path() -> Option<PathBuf> {
 
 /// Reads the configuration at `path`. A missing file gives `Ok(None)`.
 pub fn load(path: &Path) -> Result<Option<Config>, ConfigError> {
+    match read_private(path)? {
+        Some(text) => parse(&text).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// Reads a file of the user's configuration directory as text, refusing
+/// one that is not a regular file, is too large or, on Unix, could be
+/// changed by others. A missing file gives `Ok(None)`.
+fn read_private(path: &Path) -> Result<Option<String>, ConfigError> {
     let shown = path.display().to_string();
     let read_error = |error: std::io::Error| ConfigError::Read {
         path: shown.clone(),
@@ -169,9 +180,9 @@ pub fn load(path: &Path) -> Result<Option<Config>, ConfigError> {
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Err(ConfigError::TooLarge { path: shown });
     }
-    let text = String::from_utf8(bytes)
-        .map_err(|_| ConfigError::Invalid(format!("{shown} is not valid UTF-8 text")))?;
-    parse(&text).map(Some)
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| ConfigError::Invalid(format!("{shown} is not valid UTF-8 text")))
 }
 
 /// Whether a Unix mode lets the group or others write.

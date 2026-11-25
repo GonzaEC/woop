@@ -71,6 +71,9 @@ pub fn completion_list<'a>(
                 Kind::Directory => "dir ",
                 Kind::File => "file",
                 Kind::History => "hist",
+                Kind::Subcommand => "cmd ",
+                Kind::Option => "opt ",
+                Kind::Value => "val ",
             };
             let chosen = index == list.selected;
             let line = row![
@@ -82,6 +85,11 @@ pub fn completion_list<'a>(
                     .font(metrics.font)
                     .size(metrics.font_size)
                     .color(foreground)
+                    .wrapping(text::Wrapping::None),
+                text(candidate.description.as_str())
+                    .font(metrics.font)
+                    .size(metrics.font_size)
+                    .color(muted)
                     .wrapping(text::Wrapping::None),
             ]
             .spacing(metrics.font_size);
