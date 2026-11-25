@@ -541,6 +541,8 @@ impl Pane {
         history.stop_walking();
         self.gate.edited();
         self.notice = None;
+        // What the list completes changed (a paste, for example).
+        self.close_completion();
     }
 
     /// The panel grows with the text; it shrinks only at a new prompt, so
@@ -611,7 +613,10 @@ impl Pane {
         let key = keys::editor_key(&press.key, press.modifiers, press.text.as_deref(), context);
         if !matches!(
             key,
-            EditorKey::CompletionMove(_) | EditorKey::CompletionAccept | EditorKey::CompletionClose
+            EditorKey::CompletionMove(_)
+                | EditorKey::CompletionAccept
+                | EditorKey::CompletionEnter
+                | EditorKey::CompletionClose
         ) {
             // Any other key closes the list and acts as usual.
             self.close_completion();
@@ -732,6 +737,17 @@ impl Pane {
                 }
             }
             EditorKey::CompletionAccept => return self.accept_completion(history),
+            EditorKey::CompletionEnter => {
+                if self
+                    .completion
+                    .as_ref()
+                    .is_some_and(completion::List::enter_runs)
+                {
+                    self.close_completion();
+                    return self.editor_key(EditorKey::Submit, history);
+                }
+                return self.accept_completion(history);
+            }
             EditorKey::CompletionClose => self.close_completion(),
             EditorKey::Clear => {
                 history.stop_walking();
@@ -843,18 +859,27 @@ impl Pane {
     /// What to read, off the interface thread, for an argument of kind
     /// `arg`; `None` when it cannot be known (no reported directory).
     fn lookup_for(&self, arg: &Arg, path: &completion::PathRequest) -> Option<(Lookup, Want)> {
+        // bash, zsh and fish on Windows speak in `/c/Users` paths, which
+        // Windows does not understand.
+        let msys = cfg!(windows) && path.shell != Shell::PowerShell;
+        let native = |text: &str| {
+            msys.then(|| completion::msys_to_native(text))
+                .flatten()
+                .unwrap_or_else(|| text.to_owned())
+        };
         let cwd = self
             .session
             .terminal()
             .current_directory()
-            .map(std::path::PathBuf::from)
+            .map(|cwd| std::path::PathBuf::from(native(cwd)))
             .filter(|cwd| cwd.is_absolute());
         let git = |names| Some((Lookup::Git(cwd.clone()?, names), Want::Names));
         match arg {
             Arg::Path | Arg::File | Arg::Directory => {
                 let (dir, _) = completion::split_path(&path.word.value, path.shell);
+                let dir = native(dir);
                 let directory = completion::directory_to_list(
-                    dir,
+                    &dir,
                     path.word.tilde,
                     cwd.as_deref(),
                     home_directory().as_deref(),
@@ -917,41 +942,27 @@ impl Pane {
         self.offer(candidates, pending.history, &pending.path, late, history)
     }
 
-    /// Inserts the only completion, or opens the list; with none, hands
-    /// the text to the shell's own completion as before.
+    /// Does what [`completion::decide`] says: inserts the only completion,
+    /// opens the list, or hands the text to the shell's own completion.
     fn offer(
         &mut self,
-        paths: Vec<completion::Candidate>,
+        words: Vec<completion::Candidate>,
         commands: Vec<completion::Candidate>,
         path: &completion::PathRequest,
         late: bool,
         history: &mut History,
     ) -> Task<Message> {
-        let common =
-            completion::common_beginning(path, &paths).filter(|_| commands.is_empty() && !late);
-        let mut candidates = paths;
-        candidates.extend(commands);
-        match candidates.len() {
-            0 => return self.hand_off_tab(history),
-            1 if !late => {
-                let candidate = candidates.remove(0);
-                self.apply(&candidate, history);
+        match completion::decide(words, commands, path, late) {
+            completion::Decision::HandOff => return self.hand_off_tab(history),
+            completion::Decision::Nothing => {
+                self.notice = Some("Nothing to complete");
             }
-            _ => {
-                if let Some(common) = common {
-                    // The word now ends after the shared beginning.
+            completion::Decision::Insert(candidate) => self.apply(&candidate, history),
+            completion::Decision::Open { insert, list } => {
+                if let Some(common) = insert {
                     self.apply(&common, history);
-                    let end = self.editor.cursor().position.column;
-                    for candidate in &mut candidates {
-                        if let completion::Span::Word { end: old, .. } = &mut candidate.span {
-                            *old = end;
-                        }
-                    }
                 }
-                self.completion = Some(completion::List {
-                    candidates,
-                    selected: 0,
-                });
+                self.completion = Some(list);
             }
         }
         Task::none()

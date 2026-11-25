@@ -15,6 +15,9 @@ mod specs;
 mod theme;
 mod view;
 
+#[cfg(test)]
+mod robustness;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -76,7 +79,7 @@ pub enum Message {
     ShellHistory(shell_integration::Shell, Arc<[String]>),
     /// The command specifications were read (ADR 0024), with the reasons
     /// any of the user's files could not be used.
-    SpecsLoaded(Arc<specs::Specs>, Option<String>),
+    SpecsLoaded(u64, Arc<specs::Specs>, Option<String>),
 }
 
 /// Most different font family names kept during one run (ADR 0020).
@@ -125,6 +128,8 @@ struct Woop {
     spec_error: Option<String>,
     /// The command specifications in effect (ADR 0024).
     specs: Arc<specs::Specs>,
+    /// Counts reads of the specifications, so that only the latest applies.
+    spec_loads: u64,
     /// Font family names given to iced, which keeps them for the whole
     /// program; each distinct name is kept once.
     font_names: Vec<&'static str>,
@@ -153,7 +158,9 @@ impl Woop {
             config_error: None,
             shell_error: None,
             spec_error: None,
-            specs: specs::Specs::new(Vec::new()),
+            // Filled off the interface thread once the window runs.
+            specs: Arc::default(),
+            spec_loads: 0,
             font_names: Vec::new(),
             command_palette: None,
             palette_target: None,
@@ -356,7 +363,9 @@ impl Woop {
             }
             Message::PaletteClose => return self.close_palette(),
             Message::ShellHistory(shell, commands) => self.history.set_file(shell, commands),
-            Message::SpecsLoaded(specs, error) => {
+            // An older read that finished late is dropped.
+            Message::SpecsLoaded(load, _, _) if load != self.spec_loads => {}
+            Message::SpecsLoaded(_, specs, error) => {
                 self.spec_error = error;
                 for pane in self.panes.values_mut() {
                     pane.set_specs(Arc::clone(&specs));
@@ -762,9 +771,8 @@ impl Woop {
         }
     }
 
-    /// Starts a shell in a new pane, at the size of the focused pane.
-    /// Starts a pane, and reads its shell's history file if no pane has yet
-    /// (ADR 0023).
+    /// Starts a shell in a new pane, at the size of the focused pane, and
+    /// reads its shell's history file if no pane has yet (ADR 0023).
     fn spawn_pane(&mut self) -> Option<(PaneId, Task<Message>)> {
         let output = self.output.clone()?;
         let id = self.next_id;
@@ -823,7 +831,9 @@ impl Woop {
 
     /// Reads the user's command specifications on a thread of its own and
     /// puts them before the bundled ones (ADR 0024).
-    fn load_specs(&self) -> Task<Message> {
+    fn load_specs(&mut self) -> Task<Message> {
+        self.spec_loads += 1;
+        let load = self.spec_loads;
         Task::perform(
             async {
                 let (sender, receiver) = iced::futures::channel::oneshot::channel();
@@ -846,7 +856,7 @@ impl Woop {
                     Err(error) => (specs::Specs::new(Vec::new()), Some(error.to_string())),
                 }
             },
-            |(specs, error)| Message::SpecsLoaded(specs, error),
+            move |(specs, error)| Message::SpecsLoaded(load, specs, error),
         )
     }
 

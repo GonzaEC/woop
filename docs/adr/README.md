@@ -40,6 +40,7 @@ Start from [the template](template.md) and add the record to the index below in 
 | [0019](0019-tabs-and-split-panes.md) | Organise sessions in tabs of split panes | Accepted; refined by 0021, 0022 |
 | [0020](0020-toml-configuration.md) | Configure Woop with a TOML file that reloads while it runs | Accepted; refined by 0021 |
 | [0021](0021-configurable-keybindings.md) | Let the configuration change Woop's shortcuts | Accepted |
-| [0022](0022-working-directory-from-signed-marks.md) | Open new panes in the shell's directory, reported in signed marks | Accepted |
-| [0023](0023-history-and-path-completions.md) | Complete commands from the history and paths from the shell's directory | Accepted |
-| [0024](0024-command-specifications.md) | Complete subcommands and options from command specifications | Accepted |
+| [0022](0022-working-directory-from-signed-marks.md) | Open new panes in the shell's directory, reported in signed marks | Accepted; refined by 0025 |
+| [0023](0023-history-and-path-completions.md) | Complete commands from the history and paths from the shell's directory | Accepted; refined by 0025 |
+| [0024](0024-command-specifications.md) | Complete subcommands and options from command specifications | Accepted; refined by 0025 |
+| [0025](0025-completion-refinements-from-the-milestone-6-audit.md) | Refine completion after the milestone 6 audit | Accepted |

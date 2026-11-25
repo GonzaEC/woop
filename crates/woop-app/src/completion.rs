@@ -222,18 +222,10 @@ fn is_double_quote(ch: char, shell: Shell) -> bool {
     ch == '"' || (shell == Shell::PowerShell && matches!(ch, '\u{201c}' | '\u{201d}' | '\u{201e}'))
 }
 
-/// Characters that make text display differently from what it is: control
-/// characters, bidirectional and zero-width formatting, line separators.
+/// Characters that make text display differently from what it is
+/// ([`woop_config::spec::is_deceptive`]).
 pub fn is_deceptive(ch: char) -> bool {
-    ch.is_control()
-        || matches!(
-            ch,
-            '\u{061c}'
-                | '\u{200b}'..='\u{200f}'
-                | '\u{2028}'..='\u{202e}'
-                | '\u{2060}'..='\u{2069}'
-                | '\u{feff}'
-        )
+    woop_config::spec::is_deceptive(ch)
 }
 
 /// Separators a path can use in `shell`.
@@ -279,6 +271,25 @@ pub fn directory_to_list(
     })
 }
 
+/// A POSIX-style path of bash, zsh or fish on Windows (`/c/Users/me`, as
+/// the shells of Git for Windows and MSYS2 report and accept it) as a
+/// Windows path (`C:\Users\me`); `None` for any other path. Only drive
+/// paths are converted, so a path to a network share cannot come out.
+pub fn msys_to_native(path: &str) -> Option<String> {
+    let rest = path.strip_prefix('/')?;
+    let mut chars = rest.chars();
+    let drive = chars.next().filter(char::is_ascii_alphabetic)?;
+    let after = chars.as_str();
+    if !(after.is_empty() || after.starts_with('/')) {
+        return None;
+    }
+    Some(format!(
+        "{}:\\{}",
+        drive.to_ascii_uppercase(),
+        after.trim_start_matches('/').replace('/', "\\")
+    ))
+}
+
 /// One entry of a directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
@@ -304,12 +315,28 @@ pub fn list_directory(dir: &Path) -> Vec<Entry> {
                 return None;
             }
             let file_type = entry.file_type().ok()?;
-            let is_dir = file_type.is_dir()
-                || (file_type.is_symlink()
-                    && std::fs::metadata(entry.path()).is_ok_and(|metadata| metadata.is_dir()));
+            let is_dir = file_type.is_dir() || (file_type.is_symlink() && link_is_dir(&entry));
             Some(Entry { name, is_dir })
         })
         .collect()
+}
+
+/// Whether a symbolic link points at a directory. On Windows this is read
+/// from the link itself, never by following it: a link to `\\host\share`
+/// would connect to that host and offer the user's credentials, just
+/// because a directory holding it was listed.
+#[cfg(windows)]
+fn link_is_dir(entry: &std::fs::DirEntry) -> bool {
+    use std::os::windows::fs::FileTypeExt;
+    entry
+        .file_type()
+        .is_ok_and(|file_type| file_type.is_symlink_dir())
+}
+
+/// Whether a symbolic link points at a directory.
+#[cfg(not(windows))]
+fn link_is_dir(entry: &std::fs::DirEntry) -> bool {
+    std::fs::metadata(entry.path()).is_ok_and(|metadata| metadata.is_dir())
 }
 
 /// Quotes `value` for `shell` if it holds anything other than letters,
@@ -403,24 +430,35 @@ pub fn path_candidates(request: &PathRequest, entries: &[Entry]) -> Vec<Candidat
     let (dir, prefix) = request.parts();
     let separator = request.separator();
     let lower_prefix = prefix.to_lowercase();
+    // Compared without allocating: this runs over every entry, on the
+    // interface thread.
     let starts = |name: &str| {
         if request.ignore_case {
-            name.to_lowercase().starts_with(&lower_prefix)
+            let mut lower = name.chars().flat_map(char::to_lowercase);
+            lower_prefix.chars().all(|ch| lower.next() == Some(ch))
         } else {
             name.starts_with(prefix)
         }
     };
-    let mut matching: Vec<&Entry> = entries
+    let mut matching: Vec<(String, &Entry)> = entries
         .iter()
         .filter(|entry| {
             (prefix.starts_with('.') || !entry.name.starts_with('.')) && starts(&entry.name)
         })
+        .map(|entry| (entry.name.to_lowercase(), entry))
         .collect();
-    matching.sort_by_cached_key(|entry| (entry.name.to_lowercase(), entry.name.clone()));
+    let order = |a: &(String, &Entry), b: &(String, &Entry)| {
+        a.0.cmp(&b.0).then_with(|| a.1.name.cmp(&b.1.name))
+    };
+    // Only the kept ones are sorted.
+    if matching.len() > MAX_CANDIDATES {
+        matching.select_nth_unstable_by(MAX_CANDIDATES - 1, order);
+        matching.truncate(MAX_CANDIDATES);
+    }
+    matching.sort_unstable_by(order);
     matching
         .into_iter()
-        .take(MAX_CANDIDATES)
-        .map(|entry| {
+        .map(|(_, entry)| {
             // A name starting with `-` would be read as an option.
             let here = if dir.is_empty() && !request.word.tilde && entry.name.starts_with('-') {
                 format!(".{separator}")
@@ -537,12 +575,92 @@ pub fn history_candidates<'a>(
 }
 
 /// The completion list while it is open.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct List {
     /// The completions.
     pub candidates: Vec<Candidate>,
     /// The one chosen.
     pub selected: usize,
+    /// It opened after the user may have moved on (a slow listing): Enter
+    /// runs the command, as if the list were not there, until the user
+    /// chooses an entry.
+    pub late: bool,
+    /// The user moved the choice.
+    pub moved: bool,
+}
+
+/// What Tab does with the completions found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Decision {
+    /// Nothing to offer: the shell's own completion is tried.
+    HandOff,
+    /// Nothing to offer, and too late to hand the line to the shell, which
+    /// would change it under the user.
+    Nothing,
+    /// Insert this one.
+    Insert(Candidate),
+    /// Insert the shared beginning, if any, and open the list.
+    Open {
+        /// The shared beginning to insert first.
+        insert: Option<Candidate>,
+        /// The list, its spans already moved past that beginning.
+        list: List,
+    },
+}
+
+/// Decides what Tab does (ADR 0023, 0025). `words` complete the word at
+/// the cursor (paths, subcommands, options, values) and `history` the
+/// whole text. A single word completion is inserted even when the history
+/// also matches, the history's single command only when no word does. The
+/// shared beginning comes from the words alone, and is not inserted when it
+/// needs quotes (typing on would leave the quote closed). A `late` result
+/// changes nothing on its own: it only opens the list.
+pub fn decide(
+    mut words: Vec<Candidate>,
+    mut history: Vec<Candidate>,
+    request: &PathRequest,
+    late: bool,
+) -> Decision {
+    if words.is_empty() && history.is_empty() {
+        return if late {
+            Decision::Nothing
+        } else {
+            Decision::HandOff
+        };
+    }
+    if !late {
+        if words.len() == 1 {
+            return Decision::Insert(words.swap_remove(0));
+        }
+        if words.is_empty() && history.len() == 1 {
+            return Decision::Insert(history.swap_remove(0));
+        }
+    }
+    let insert = (!late && words.len() > 1)
+        .then(|| common_beginning(request, &words))
+        .flatten()
+        .filter(|common| common.text == common.stem);
+    let mut candidates = words;
+    if let Some(common) = &insert
+        && let Span::Word { start, .. } = common.span
+    {
+        // The word now ends after the shared beginning.
+        let end = start + common.text.len();
+        for candidate in &mut candidates {
+            if let Span::Word { end: old, .. } = &mut candidate.span {
+                *old = end;
+            }
+        }
+    }
+    candidates.extend(history);
+    Decision::Open {
+        insert,
+        list: List {
+            candidates,
+            late,
+            ..List::default()
+        },
+    }
 }
 
 impl List {
@@ -551,7 +669,14 @@ impl List {
         let len = self.candidates.len();
         if len > 0 {
             self.selected = (self.selected as isize + step).rem_euclid(len as isize) as usize;
+            self.moved = true;
         }
+    }
+
+    /// Whether Enter runs the command instead of inserting the chosen
+    /// entry: the list came late and the user has not chosen anything.
+    pub fn enter_runs(&self) -> bool {
+        self.late && !self.moved
     }
 
     /// The chosen completion.
@@ -664,6 +789,98 @@ mod tests {
         );
     }
 
+    fn history(commands: &[&str]) -> Vec<Candidate> {
+        history_candidates("", commands.iter().copied())
+    }
+
+    #[test]
+    fn a_single_word_completion_is_inserted_even_with_history() {
+        let request = request("git chec", Shell::Bash);
+        let words = vec![request.candidate(Kind::Subcommand, "checkout", "checkout", "")];
+        let decision = decide(
+            words.clone(),
+            history(&["git checkout main"]),
+            &request,
+            false,
+        );
+        assert_eq!(decision, Decision::Insert(words[0].clone()));
+        // Only the history: its single command is inserted.
+        let decision = decide(Vec::new(), history(&["git checkout main"]), &request, false);
+        assert!(matches!(decision, Decision::Insert(c) if c.kind == Kind::History));
+        // Several history commands open the list.
+        let decision = decide(Vec::new(), history(&["a", "b"]), &request, false);
+        assert!(matches!(decision, Decision::Open { insert: None, .. }));
+    }
+
+    #[test]
+    fn the_shared_beginning_comes_from_words_and_moves_the_spans() {
+        let listing = entries(&[("config.toml", false), ("config.json", false)]);
+        let request = request("cat con", Shell::Bash);
+        let words = path_candidates(&request, &listing);
+        let Decision::Open { insert, list } = decide(words, history(&["cat x"]), &request, false)
+        else {
+            panic!("a list");
+        };
+        let insert = insert.expect("shared beginning");
+        assert_eq!(insert.text, "config.");
+        // Inserted over 4..7 ("con"): the word now ends at 4 + 7.
+        assert_eq!(
+            list.candidates[0].span,
+            Span::Word {
+                line: 0,
+                start: 4,
+                end: 11
+            }
+        );
+        assert_eq!(list.candidates.last().map(|c| c.kind), Some(Kind::History));
+        assert!(!list.enter_runs());
+    }
+
+    #[test]
+    fn a_quoted_shared_beginning_is_not_inserted() {
+        let listing = entries(&[("my file a", false), ("my file b", false)]);
+        let request = request("cat m", Shell::Bash);
+        let words = path_candidates(&request, &listing);
+        assert!(matches!(
+            decide(words, Vec::new(), &request, false),
+            Decision::Open { insert: None, .. }
+        ));
+    }
+
+    #[test]
+    fn late_results_never_change_the_line_on_their_own() {
+        let request = request("ls s", Shell::Bash);
+        let one = vec![request.candidate(Kind::File, "src", "src", "")];
+        let Decision::Open { insert, mut list } = decide(one, Vec::new(), &request, true) else {
+            panic!("a list, even for one");
+        };
+        assert_eq!(insert, None);
+        assert!(list.enter_runs(), "Enter runs the command");
+        list.select(1);
+        assert!(!list.enter_runs(), "once chosen, Enter inserts");
+        assert_eq!(
+            decide(Vec::new(), Vec::new(), &request, true),
+            Decision::Nothing
+        );
+        assert_eq!(
+            decide(Vec::new(), Vec::new(), &request, false),
+            Decision::HandOff
+        );
+    }
+
+    #[test]
+    fn posix_drive_paths_become_windows_paths() {
+        assert_eq!(
+            msys_to_native("/c/Users/me").as_deref(),
+            Some(r"C:\Users\me")
+        );
+        assert_eq!(msys_to_native("/d").as_deref(), Some(r"D:\"));
+        assert_eq!(msys_to_native("/c/").as_deref(), Some(r"C:\"));
+        for other in ["/usr/bin", "//host/share", "relative/c", "/1/x", "", "/"] {
+            assert_eq!(msys_to_native(other), None, "{other}");
+        }
+    }
+
     #[test]
     fn quoting_round_trips_through_word_reading() {
         let names = [
@@ -693,6 +910,123 @@ mod tests {
                 let line = format!("cat {quoted}");
                 assert_eq!(word(&line, shell).value, name, "{shell:?} {quoted}");
             }
+        }
+    }
+
+    /// Names that need quoting, for the real shells.
+    const AWKWARD_NAMES: [&str; 14] = [
+        "my dir",
+        "it's",
+        "a\"b",
+        "$HOME",
+        "`tick`",
+        "semi;colon",
+        "@splat",
+        "a,b",
+        "star*",
+        "back\\slash",
+        "ñandú",
+        "x\u{2019}; echo INJECTED; \u{2019}.txt",
+        "a\u{2018}b\u{201a}c\u{201b}d",
+        "q\u{201c}u\u{201d}o\u{201e}te",
+    ];
+
+    /// Runs `script` in a real shell, if this machine has it, and returns
+    /// its output lines.
+    fn run_in(shell: Shell, script: &str) -> Option<Vec<String>> {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let dir =
+            std::env::temp_dir().join(format!("woop-quote-{:?}-{}", shell, std::process::id()));
+        std::fs::create_dir_all(&dir).ok()?;
+        let mut command = match shell {
+            Shell::PowerShell => {
+                // A file with a byte order mark, so that every version
+                // reads it as UTF-8, and UTF-8 output.
+                let file = dir.join("names.ps1");
+                let text =
+                    format!("\u{feff}[Console]::OutputEncoding = [Text.Encoding]::UTF8\n{script}");
+                std::fs::write(&file, text).ok()?;
+                let program = if cfg!(windows) {
+                    "powershell.exe"
+                } else {
+                    "pwsh"
+                };
+                let mut command = Command::new(program);
+                command
+                    .args(["-NoProfile", "-NonInteractive", "-File"])
+                    .arg(&file);
+                command
+            }
+            // On Windows `bash` may name the Linux subsystem's; only Git
+            // for Windows' bash is used there.
+            Shell::Bash if cfg!(windows) => {
+                let git_bash = std::path::Path::new(r"C:\Program Files\Git\bin\bash.exe");
+                if !git_bash.exists() {
+                    return None;
+                }
+                let mut command = Command::new(git_bash);
+                command.args(["--noprofile", "--norc", "-s"]);
+                command
+            }
+            Shell::Zsh | Shell::Fish if cfg!(windows) => return None,
+            Shell::Bash => {
+                let mut command = Command::new("bash");
+                command.args(["--noprofile", "--norc", "-s"]);
+                command
+            }
+            Shell::Zsh => {
+                let mut command = Command::new("zsh");
+                command.args(["-f", "-s"]);
+                command
+            }
+            Shell::Fish => {
+                let mut command = Command::new("fish");
+                command.arg("--no-config");
+                command
+            }
+        };
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        if shell != Shell::PowerShell {
+            child.stdin.take()?.write_all(script.as_bytes()).ok()?;
+        } else {
+            drop(child.stdin.take());
+        }
+        let output = child.wait_with_output().ok()?;
+        let _ = std::fs::remove_dir_all(&dir);
+        let text = String::from_utf8(output.stdout).ok()?;
+        Some(
+            text.lines()
+                .map(|line| line.trim_end_matches('\r').to_owned())
+                .collect(),
+        )
+    }
+
+    /// Checked against the shells themselves, not against Woop's own
+    /// reading of the quotes, which could share a mistake with them.
+    #[test]
+    fn real_shells_read_quoted_names_back() {
+        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish, Shell::PowerShell] {
+            let print = if shell == Shell::PowerShell {
+                "Write-Output"
+            } else {
+                "printf '%s\\n'"
+            };
+            let script: String = AWKWARD_NAMES
+                .iter()
+                .map(|name| format!("{print} {}\n", quote(name, false, shell)))
+                .collect();
+            let Some(lines) = run_in(shell, &script) else {
+                eprintln!("{shell:?} not available: quoting not checked in it");
+                continue;
+            };
+            eprintln!("{shell:?}: quoting checked in the real shell");
+            assert_eq!(lines, AWKWARD_NAMES, "{shell:?}\n{script}");
         }
     }
 
@@ -740,7 +1074,22 @@ mod tests {
     #[test]
     fn names_that_display_differently_are_deceptive() {
         for ch in [
-            '\u{202e}', '\u{2066}', '\u{200b}', '\u{2028}', '\u{feff}', '\u{061c}', '\n',
+            '\u{202e}',
+            '\u{2066}',
+            '\u{200b}',
+            '\u{2028}',
+            '\u{feff}',
+            '\u{061c}',
+            '\n',
+            '\u{ad}',
+            '\u{34f}',
+            '\u{180e}',
+            '\u{206a}',
+            '\u{e0041}',
+            '\u{fe0f}',
+            '\u{115f}',
+            '\u{3164}',
+            '\u{ffa0}',
         ] {
             assert!(is_deceptive(ch), "{:?}", ch);
         }
@@ -902,6 +1251,7 @@ mod tests {
         let mut list = List {
             candidates,
             selected: 0,
+            ..List::default()
         };
         list.select(-1);
         assert_eq!(list.selected, 2);

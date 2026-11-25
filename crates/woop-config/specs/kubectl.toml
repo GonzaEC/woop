@@ -12,8 +12,9 @@ options = [
 name = "get"
 description = "Show resources"
 args = ["all", "pods", "po", "deployments", "deploy", "services", "svc", "nodes", "no", "namespaces", "ns", "configmaps", "cm", "secrets", "ingresses", "ing", "jobs", "cronjobs", "cj", "daemonsets", "ds", "statefulsets", "sts", "replicasets", "rs", "persistentvolumeclaims", "pvc", "persistentvolumes", "pv", "serviceaccounts", "sa", "events", "ev", "endpoints", "ep", "roles", "rolebindings", "clusterroles", "clusterrolebindings", "storageclasses", "sc", "horizontalpodautoscalers", "hpa", "networkpolicies", "netpol"]
+rest = "text"
 options = [
-  { names = ["-o", "--output"], description = "Output format", args = ["wide", "yaml", "json", "name", "jsonpath", "custom-columns"] },
+  { names = ["-o", "--output"], description = "Output format", args = ["wide", "yaml", "json", "name"] },
   { names = ["-A", "--all-namespaces"], description = "Every namespace" },
   { names = ["-l", "--selector"], description = "Label selector", args = "text" },
   { names = ["-w", "--watch"], description = "Watch for changes" },
@@ -26,6 +27,7 @@ options = [
 name = "describe"
 description = "Show details of resources"
 args = ["pods", "po", "deployments", "deploy", "services", "svc", "nodes", "no", "namespaces", "ns", "configmaps", "cm", "secrets", "ingresses", "ing", "jobs", "cronjobs", "cj", "daemonsets", "ds", "statefulsets", "sts", "replicasets", "rs", "persistentvolumeclaims", "pvc", "persistentvolumes", "pv", "serviceaccounts", "sa"]
+rest = "text"
 options = [
   { names = ["-A", "--all-namespaces"], description = "Every namespace" },
   { names = ["-l", "--selector"], description = "Label selector", args = "text" },
@@ -47,6 +49,7 @@ options = [
 name = "delete"
 description = "Delete resources"
 args = ["pods", "po", "deployments", "deploy", "services", "svc", "namespaces", "ns", "configmaps", "cm", "secrets", "ingresses", "ing", "jobs", "cronjobs", "cj", "daemonsets", "ds", "statefulsets", "sts", "persistentvolumeclaims", "pvc"]
+rest = "text"
 options = [
   { names = ["-f", "--filename"], description = "Resources from this file", args = "path" },
   { names = ["-l", "--selector"], description = "Label selector", args = "text" },
@@ -148,6 +151,7 @@ args = "text"
 name = "edit"
 description = "Edit a resource in an editor"
 args = ["pods", "deployments", "deploy", "services", "svc", "configmaps", "cm", "secrets", "ingresses", "ing", "jobs", "cronjobs", "daemonsets", "ds", "statefulsets", "sts"]
+rest = "text"
 
 [[subcommands]]
 name = "logs"
@@ -186,6 +190,7 @@ options = [
 name = "scale"
 description = "Set the number of replicas"
 args = ["deployments", "deploy", "statefulsets", "sts", "replicasets", "rs"]
+rest = "text"
 options = [
   { names = ["--replicas"], description = "Number of replicas", args = "text" },
 ]
@@ -308,6 +313,7 @@ options = [
 name = "expose"
 description = "Make a resource reachable as a service"
 args = ["deployments", "deploy", "pods", "po", "services", "svc", "replicasets", "rs"]
+rest = "text"
 options = [
   { names = ["--port"], description = "Service port", args = "text" },
   { names = ["--target-port"], description = "Container port", args = "text" },

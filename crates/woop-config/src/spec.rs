@@ -41,8 +41,12 @@ pub struct Command {
     pub options: Vec<Opt>,
     /// Its subcommands.
     pub subcommands: Vec<Command>,
-    /// What its positional arguments are.
+    /// What its first positional argument is, and the later ones unless
+    /// `rest` says otherwise.
     pub args: Option<Arg>,
+    /// What its second and later positional arguments are (`git push
+    /// <remote> <branch>...`).
+    pub rest: Option<Arg>,
 }
 
 /// An option of a command.
@@ -90,12 +94,17 @@ impl Command {
     }
 }
 
-/// The specifications that come with Woop.
-pub fn bundled() -> Vec<Command> {
-    BUNDLED
-        .iter()
-        .filter_map(|(_, text)| parse(text).ok())
-        .collect()
+/// The specifications that come with Woop, parsed once on first use and
+/// shared from then on.
+pub fn bundled() -> std::sync::Arc<[Command]> {
+    static BUNDLED_SPECS: std::sync::OnceLock<std::sync::Arc<[Command]>> =
+        std::sync::OnceLock::new();
+    std::sync::Arc::clone(BUNDLED_SPECS.get_or_init(|| {
+        BUNDLED
+            .iter()
+            .filter_map(|(_, text)| parse(text).ok())
+            .collect()
+    }))
 }
 
 /// Bundled specification files, by name.
@@ -239,6 +248,7 @@ struct RawCommand {
     #[serde(default)]
     subcommands: Vec<RawCommand>,
     args: Option<RawArg>,
+    rest: Option<RawArg>,
 }
 
 #[derive(Deserialize)]
@@ -310,6 +320,7 @@ fn convert(raw: RawCommand, items: &mut usize, depth: usize) -> Result<Command, 
         .collect::<Result<_, _>>()?;
     Ok(Command {
         args: raw.args.map(|arg| arg_kind(arg, items)).transpose()?,
+        rest: raw.rest.map(|arg| arg_kind(arg, items)).transpose()?,
         name,
         aliases,
         description,
@@ -369,13 +380,33 @@ fn description(value: String) -> Result<String, ConfigError> {
     Ok(value)
 }
 
-/// Characters that make text display differently from what it is.
-fn is_deceptive(ch: char) -> bool {
+/// Characters that make text display differently from what it is, so
+/// that what is shown is not what is used: control characters, format
+/// characters (bidirectional controls, zero-width and invisible ones, tag
+/// characters), variation selectors, line separators and the characters
+/// that render blank (ADR 0023, 0024). Shared by every place that shows
+/// untrusted names.
+pub fn is_deceptive(ch: char) -> bool {
     ch.is_control()
-        || crate::is_direction_override(ch)
         || matches!(
             ch,
-            '\u{061c}' | '\u{200b}'..='\u{200d}' | '\u{2028}' | '\u{2029}' | '\u{2060}'..='\u{2065}' | '\u{feff}'
+            '\u{00ad}'
+                | '\u{034f}'
+                | '\u{061c}'
+                | '\u{115f}'..='\u{1160}'
+                | '\u{17b4}'..='\u{17b5}'
+                | '\u{180b}'..='\u{180f}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{206f}'
+                | '\u{3164}'
+                | '\u{fe00}'..='\u{fe0f}'
+                | '\u{feff}'
+                | '\u{ffa0}'
+                | '\u{fff0}'..='\u{fff8}'
+                | '\u{1bca0}'..='\u{1bca3}'
+                | '\u{1d173}'..='\u{1d17a}'
+                | '\u{e0000}'..='\u{e0fff}'
         )
 }
 
@@ -414,8 +445,8 @@ mod tests {
                 }
             }
         }
-        for spec in bundled() {
-            check(&spec, &spec.name);
+        for spec in bundled().iter() {
+            check(spec, &spec.name);
         }
     }
 
@@ -501,6 +532,50 @@ mod tests {
         );
         assert!(parse(&text).is_ok());
         assert_eq!(nesting("a = \"[[[[\"\nb = '{{{{'"), 0);
+    }
+
+    /// Parses on a thread with a small stack, as a crafted file must not
+    /// exhaust the stack of the thread that reads it.
+    fn parse_on_small_stack(text: String) -> bool {
+        std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || {
+                let _ = parse(&text);
+            })
+            .expect("spawn")
+            .join()
+            .is_ok()
+    }
+
+    #[test]
+    fn inputs_that_fool_the_nesting_check_are_still_refused() {
+        // `'''` strings, quoted header keys and dotted keys are not counted
+        // exactly; the parser's own recursion limit stops them.
+        let deep = 20_000;
+        let cases = [
+            format!(
+                "x = '''it's'''\nname = \"x\"\nargs = {}{}",
+                "[".repeat(deep),
+                "]".repeat(deep)
+            ),
+            format!("name = \"x\"\n{} = 1", vec!["a"; deep].join(".")),
+            format!("name = \"x\"\n[\"]\".{}]\n", vec!["b"; deep].join(".")),
+        ];
+        for text in cases {
+            assert!(parse_on_small_stack(text));
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn any_text_is_parsed_or_refused_without_crashing(
+            text in proptest::prop_oneof![
+                "[\\[\\]{}=\"'a-z.,\n #]{0,400}",
+                proptest::prelude::any::<String>(),
+            ]
+        ) {
+            proptest::prop_assert!(parse_on_small_stack(text));
+        }
     }
 
     #[test]
