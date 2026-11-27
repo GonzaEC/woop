@@ -18,6 +18,13 @@ use crate::theme::{self, Palette};
 
 /// Space between the window edge and the grid, in logical pixels.
 const PADDING: f32 = 6.0;
+
+/// Distance of the block bars from the left edge, in logical pixels; the
+/// command editor's panel draws its bar at the same place.
+pub const BAR_LEFT: f32 = 1.0;
+
+/// Width of the block bars.
+pub const BAR_WIDTH: f32 = 3.0;
 /// Lines scrolled per mouse wheel notch.
 const LINES_PER_NOTCH: f32 = 3.0;
 /// Maximum time between clicks for them to count as a double or triple click.
@@ -102,6 +109,24 @@ pub struct TerminalView<'a> {
     pub takes_keys: bool,
     /// Cached geometry, cleared whenever the screen changes.
     pub cache: &'a canvas::Cache,
+    /// Rows the screen is drawn lower by, so that its last used row sits
+    /// just above the command editor (ADR 0026). Clicks are read back
+    /// through the same shift.
+    pub shift: usize,
+}
+
+/// How many rows of `screen` are in use: up to the last row holding text,
+/// a coloured background or a selection, or the cursor, whichever is
+/// lower. Walks up from the bottom and stops at the first used row.
+pub fn used_rows(screen: &Screen) -> usize {
+    let cursor = screen.cursor.map_or(0, |cursor| cursor.row + 1);
+    let blank =
+        |cell: &Cell| cell.ch == ' ' && cell.bg == woop_term::Color::Background && !cell.selected;
+    let text = (0..screen.rows)
+        .rev()
+        .find(|&row| !screen.row(row).iter().all(blank))
+        .map_or(0, |row| row + 1);
+    cursor.max(text)
 }
 
 /// Widget state kept by iced between frames.
@@ -269,7 +294,7 @@ impl TerminalView<'_> {
     fn origin(&self, row: usize, col: usize) -> Point {
         Point::new(
             PADDING + col as f32 * self.metrics.cell_width,
-            PADDING + row as f32 * self.metrics.cell_height,
+            PADDING + (row + self.shift) as f32 * self.metrics.cell_height,
         )
     }
 
@@ -281,7 +306,7 @@ impl TerminalView<'_> {
         let last_row = self.screen.rows.saturating_sub(1);
         let last_col = self.screen.cols.saturating_sub(1);
         let x = ((position.x - PADDING) / metrics.cell_width).max(0.0);
-        let y = ((position.y - PADDING) / metrics.cell_height).max(0.0);
+        let y = ((position.y - PADDING) / metrics.cell_height - self.shift as f32).max(0.0);
         let col = x.floor() as usize;
         SelectionPoint {
             row: (y.floor() as usize).min(last_row),
@@ -425,16 +450,32 @@ impl TerminalView<'_> {
         let metrics = self.metrics;
         let width = self.screen.cols as f32 * metrics.cell_width;
         for block in &self.screen.blocks {
+            // The prompt the editor types into has the editor's colour, and
+            // its bar runs down to the editor's panel below the grid (ADR
+            // 0026).
+            let waiting = block.state == BlockState::Prompt;
             let color = match (block.state, block.exit_code) {
-                (BlockState::Prompt, _) => continue,
+                (BlockState::Prompt, _) if !self.keys.editor_active => continue,
+                (BlockState::Prompt, _) if self.takes_keys => self.palette.cursor,
+                (BlockState::Prompt, _) => {
+                    theme::dim(self.palette.foreground, self.palette.background)
+                }
                 (BlockState::Running, _) => self.palette.cursor,
                 (BlockState::Finished, Some(0)) => self.palette.success,
                 (BlockState::Finished, Some(_)) => self.palette.failure,
                 (BlockState::Finished, None) => self.palette.separator,
             };
             let top = self.origin(block.rows.start, 0).y;
-            let height = block.rows.len() as f32 * metrics.cell_height;
-            frame.fill_rectangle(Point::new(1.0, top), Size::new(3.0, height), color);
+            let height = if waiting {
+                frame.height() - top
+            } else {
+                block.rows.len() as f32 * metrics.cell_height
+            };
+            frame.fill_rectangle(
+                Point::new(BAR_LEFT, top),
+                Size::new(BAR_WIDTH, height),
+                color,
+            );
 
             let Some(row) = block.prompt_row else {
                 continue;
@@ -626,6 +667,7 @@ mod tests {
             },
             takes_keys: true,
             cache: &cache,
+            shift: 0,
         };
 
         let inside = view.selection_point(Point::new(
@@ -653,5 +695,27 @@ mod tests {
                 right_half: true
             }
         );
+
+        // Drawn 10 rows lower, the same pixel is 10 rows higher on the
+        // screen, and the space above the first row selects row 0.
+        let shifted = TerminalView { shift: 10, ..view };
+        let point = Point::new(PADDING + 8.0 * 3.0 + 5.0, PADDING + 18.0 * 12.0 + 1.0);
+        assert_eq!(shifted.selection_point(point).row, 2);
+        assert_eq!(shifted.origin(2, 3).y, PADDING + 18.0 * 12.0);
+        assert_eq!(shifted.selection_point(Point::new(20.0, 30.0)).row, 0);
+    }
+
+    #[test]
+    fn used_rows_end_at_the_last_text_or_the_cursor() {
+        let mut terminal = woop_term::Terminal::new(TerminalSize::new(24, 80));
+        assert_eq!(used_rows(&terminal.screen()), 1, "the cursor's row");
+        terminal.advance(b"one\r\ntwo\r\nthree");
+        assert_eq!(used_rows(&terminal.screen()), 3);
+        // The cursor below the text counts too.
+        terminal.advance(b"\r\n\r\n");
+        assert_eq!(used_rows(&terminal.screen()), 5);
+        // A coloured background is used, even without text.
+        terminal.advance(b"\x1b[10;1H\x1b[41m \x1b[0m\x1b[3;1H");
+        assert_eq!(used_rows(&terminal.screen()), 10);
     }
 }

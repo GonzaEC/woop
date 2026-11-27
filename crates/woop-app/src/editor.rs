@@ -10,7 +10,7 @@ use crate::keys::{self, EditorContext, EditorKey, KeyContext};
 use crate::pane::Message;
 use crate::pane::PaneId;
 use crate::theme::{self, Palette};
-use crate::view::Metrics;
+use crate::view::{BAR_LEFT, BAR_WIDTH, Metrics};
 
 /// Most lines of text the panel grows to; longer text scrolls inside it.
 const MAX_LINES: usize = 8;
@@ -19,7 +19,7 @@ const MAX_LINES: usize = 8;
 const PADDING: f32 = 6.0;
 
 /// Shown in front of the editor's text.
-const MARKER: &str = "\u{203a}";
+const MARKER: &str = "\u{276f}";
 
 /// What the panel shows.
 pub struct Panel<'a> {
@@ -186,6 +186,9 @@ pub fn panel(panel: Panel<'_>) -> Element<'_, Message> {
     let height = lines as f32 * metrics.cell_height + 2.0 * PADDING;
     let (foreground, background, selection) =
         (palette.foreground, palette.background, palette.selection);
+    // The panel is a raised surface under the current prompt, so that it
+    // reads as that block's input (ADR 0026).
+    let surface = theme::raised(background, foreground);
     let warning = palette.failure;
     let muted = theme::dim(foreground, background);
     let placeholder = match status {
@@ -204,7 +207,7 @@ pub fn panel(panel: Panel<'_>) -> Element<'_, Message> {
         .height(Length::Fixed(height))
         .wrapping(text::Wrapping::WordOrGlyph)
         .style(move |_theme, status| text_editor::Style {
-            background: Background::Color(background),
+            background: Background::Color(surface),
             border: Border::default(),
             placeholder: muted,
             value: if matches!(status, Status::Disabled) {
@@ -246,8 +249,10 @@ pub fn panel(panel: Panel<'_>) -> Element<'_, Message> {
             .align_right(Length::Fill),
         );
     }
-    // A marker in front of the text shows where typing goes, and a line
-    // separates the panel from the grid.
+    // A marker in front of the text shows where typing goes, and the bar
+    // of the prompt's block runs on down the panel's left edge, at the
+    // same place as the grid's block bars, so the panel reads as part of
+    // the current block (ADR 0026).
     let marker = container(
         text(MARKER)
             .font(metrics.font)
@@ -256,21 +261,33 @@ pub fn panel(panel: Panel<'_>) -> Element<'_, Message> {
             .color(accent),
     )
     .padding(Padding {
-        left: PADDING,
+        left: PADDING - BAR_LEFT - BAR_WIDTH,
         top: PADDING,
         ..Padding::ZERO
     });
-    let line = container(Space::new())
-        .width(Length::Fill)
-        .height(1)
-        .style(move |_theme| container::Style {
-            background: Some(Background::Color(accent)),
-            ..container::Style::default()
-        });
+    let bar = container(
+        container(Space::new())
+            .width(BAR_WIDTH)
+            .height(Length::Fixed(height))
+            .style(move |_theme| container::Style {
+                background: Some(Background::Color(accent)),
+                ..container::Style::default()
+            }),
+    )
+    .padding(Padding {
+        left: BAR_LEFT,
+        ..Padding::ZERO
+    });
     // Any click on the panel, also outside the text, keeps the keyboard on
     // the editor. A right click pastes, as on the grid: into the editor
     // while it is active, into the shell otherwise.
-    mouse_area(column![line, row![marker, layers]].width(Length::Fill))
+    let panel = container(row![bar, marker, layers])
+        .width(Length::Fill)
+        .style(move |_theme| container::Style {
+            background: Some(Background::Color(surface)),
+            ..container::Style::default()
+        });
+    mouse_area(panel)
         .on_press(Message::FocusEditor)
         .on_right_press(Message::PasteClicked)
         .into()
