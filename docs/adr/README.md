@@ -34,7 +34,7 @@ Start from [the template](template.md) and add the record to the index below in 
 | [0013](0013-bound-the-cost-of-program-output.md) | Bound the cost and the reach of program output | Accepted |
 | [0014](0014-property-based-robustness-tests.md) | Test untrusted input with property-based robustness tests | Accepted |
 | [0015](0015-write-input-on-a-dedicated-thread.md) | Write process input on a dedicated thread | Accepted |
-| [0016](0016-command-editor-at-the-prompt.md) | Edit commands in Woop's own editor while the shell waits at a prompt | Accepted; refined by 0017, 0023 |
+| [0016](0016-command-editor-at-the-prompt.md) | Edit commands in Woop's own editor while the shell waits at a prompt | Accepted; refined by 0017, 0023, 0026 |
 | [0017](0017-command-editor-key-handling.md) | Decide the command editor's keys when they are handled, and bound what it holds | Accepted |
 | [0018](0018-per-session-mark-token.md) | Trust only shell integration marks carrying a per-session token | Accepted |
 | [0019](0019-tabs-and-split-panes.md) | Organise sessions in tabs of split panes | Accepted; refined by 0021, 0022 |
@@ -44,3 +44,4 @@ Start from [the template](template.md) and add the record to the index below in 
 | [0023](0023-history-and-path-completions.md) | Complete commands from the history and paths from the shell's directory | Accepted; refined by 0025 |
 | [0024](0024-command-specifications.md) | Complete subcommands and options from command specifications | Accepted; refined by 0025 |
 | [0025](0025-completion-refinements-from-the-milestone-6-audit.md) | Refine completion after the milestone 6 audit | Accepted |
+| [0026](0026-output-above-the-command-editor.md) | Draw the output just above the command editor | Accepted |

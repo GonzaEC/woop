@@ -78,6 +78,18 @@ impl Palette {
     }
 }
 
+/// A surface one step above `background`, towards `foreground`: the
+/// command editor's panel and other raised parts (ADR 0026).
+pub fn raised(background: Color, foreground: Color) -> Color {
+    let mix = |a: f32, b: f32| a * 0.94 + b * 0.06;
+    Color {
+        r: mix(background.r, foreground.r),
+        g: mix(background.g, foreground.g),
+        b: mix(background.b, foreground.b),
+        a: background.a,
+    }
+}
+
 /// Mixes a colour towards the background, used for faint text.
 pub fn dim(color: Color, background: Color) -> Color {
     let mix = |a: f32, b: f32| a * 0.6 + b * 0.4;

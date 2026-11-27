@@ -152,6 +152,8 @@ pub struct Pane {
     listing: bool,
     /// The command specifications in effect (ADR 0024).
     specs: Arc<Specs>,
+    /// Rows of the snapshot in use ([`crate::view::used_rows`]).
+    used_rows: usize,
 }
 
 /// A completion waiting for its directory listing.
@@ -222,6 +224,7 @@ impl Pane {
             pending: None,
             requests: 0,
             listing: false,
+            used_rows: 0,
             specs,
         }
     }
@@ -473,6 +476,13 @@ impl Pane {
             keys: keys.clone(),
             takes_keys: focused,
             cache: &self.cache,
+            // The output sits just above the editor while the screen is not
+            // full (ADR 0026).
+            shift: if self.panel_visible() && self.used_rows > 0 {
+                self.screen.rows.saturating_sub(self.used_rows)
+            } else {
+                0
+            },
         })
         .width(Length::Fill)
         .height(Length::Fill);
@@ -1106,6 +1116,7 @@ impl Pane {
     fn refresh(&mut self) {
         self.stale = false;
         self.screen = Terminal::screen(self.session.terminal());
+        self.used_rows = crate::view::used_rows(&self.screen);
         self.cache.clear();
     }
 }
